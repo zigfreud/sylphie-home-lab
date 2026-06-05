@@ -112,6 +112,7 @@ Status and stop commands:
 ```powershell
 .\scripts\status_sylphie.ps1
 .\scripts\stop_sylphie.ps1
+.\scripts\stop_sylphie.ps1 -ForcePortOwner
 .\scripts\start_sylphie.ps1 -Restart
 ```
 
@@ -126,6 +127,18 @@ logs/server.log
 ASUS Armoury Crate, Aura, and LightingService should be closed or stopped before issuing hardware write commands. Sylphie only warns about those processes; it does not kill or stop them automatically.
 
 The API is intended for localhost use. Binding to `0.0.0.0` is not recommended until authentication is implemented.
+
+If port `8765` is occupied, inspect it with:
+
+```powershell
+.\scripts\status_sylphie.ps1
+```
+
+`stop_sylphie.ps1` stops only the saved Sylphie PID or the process that owns the configured port and matches the Sylphie server signature. If the port owner has an empty or unusual command line but you know it is the Sylphie server, use:
+
+```powershell
+.\scripts\stop_sylphie.ps1 -ForcePortOwner
+```
 
 ## API Reliability Test
 

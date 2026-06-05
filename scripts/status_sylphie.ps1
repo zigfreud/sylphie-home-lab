@@ -1,43 +1,66 @@
-param()
+param(
+    [int]$Port = 8765
+)
 
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "sylphie_lifecycle_common.ps1")
+
+$ProjectRoot = Get-SylphieProjectRoot
 $StateDir = Join-Path $ProjectRoot ".sylphie"
 $PidPath = Join-Path $StateDir "server.pid"
-$UrlPath = Join-Path $StateDir "server.url"
+$Url = Get-SylphieSavedUrl -ProjectRoot $ProjectRoot -DefaultPort $Port
+$ConfiguredPort = Get-SylphiePortFromUrl -Url $Url -DefaultPort $Port
+if ($PSBoundParameters.ContainsKey("Port")) {
+    $ConfiguredPort = $Port
+}
 $LogPath = Join-Path $ProjectRoot "logs\server.log"
 
-$url = "http://127.0.0.1:8765/"
-if (Test-Path -LiteralPath $UrlPath) {
-    $url = (Get-Content -LiteralPath $UrlPath -Raw).Trim()
+$savedPid = Get-SylphieSavedPid -ProjectRoot $ProjectRoot
+$savedInfo = $null
+if ($null -ne $savedPid) {
+    $savedInfo = Get-SylphieProcessInfo -ProcessId $savedPid
+}
+
+$portOwnerPid = Get-SylphiePortOwnerPid -Port $ConfiguredPort
+$portOwnerInfo = $null
+if ($null -ne $portOwnerPid) {
+    $portOwnerInfo = Get-SylphieProcessInfo -ProcessId $portOwnerPid
 }
 
 Write-Host "Sylphie status"
-Write-Host "URL: $url"
+Write-Host "URL: $Url"
+Write-Host "Configured port: $ConfiguredPort"
 Write-Host "Log: $LogPath"
 
-if (-not (Test-Path -LiteralPath $PidPath)) {
-    Write-Host "PID: none"
-    Write-Host "Running: false"
-    exit 0
+if ($null -eq $savedPid) {
+    Write-Host "Saved PID: none"
+} else {
+    Write-Host "Saved PID: $savedPid"
+}
+Write-SylphieProcessInfo -Label "Saved PID process:" -ProcessInfo $savedInfo
+
+if ($null -eq $portOwnerPid) {
+    Write-Host "Port owner: none"
+} else {
+    Write-Host "Port owner PID: $portOwnerPid"
+}
+Write-SylphieProcessInfo -Label "Port owner process:" -ProcessInfo $portOwnerInfo
+
+if (($null -ne $savedPid) -and ($null -ne $portOwnerPid)) {
+    if ($savedPid -eq $portOwnerPid) {
+        Write-Host "PID file matches port owner."
+    } else {
+        Write-Host "PID file does not match port owner"
+    }
 }
 
-$pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
-Write-Host "PID: $pidText"
-if (-not ($pidText -match "^\d+$")) {
-    Write-Host "Running: false (invalid PID file)"
-    exit 1
-}
-
-$serverPid = [int]$pidText
-$process = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
-if ($null -eq $process) {
+if ($null -eq $portOwnerPid) {
     Write-Host "Running: false"
     exit 0
 }
 
 Write-Host "Running: true"
 try {
-    $healthUrl = $url.TrimEnd("/") + "/api/health"
+    $healthUrl = $Url.TrimEnd("/") + "/api/health"
     $health = Invoke-RestMethod -Method Get -Uri $healthUrl -TimeoutSec 6
     Write-Host ("Health ok: {0}" -f $health.ok)
     Write-Host ("Backend: {0}" -f $health.exe)

@@ -8,7 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "sylphie_lifecycle_common.ps1")
+
+$ProjectRoot = Get-SylphieProjectRoot
 $ExePath = Join-Path $ProjectRoot "bin\sylphie_rgb.exe"
 $DllPath = Join-Path $ProjectRoot "bin\inpout32.dll"
 $ServerPath = Join-Path $ProjectRoot "src\server\sylphie_server.py"
@@ -25,18 +27,6 @@ function Fail($Message) {
     exit 1
 }
 
-function Get-ListeningPid($Port) {
-    try {
-        $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $connection) {
-            return [int]$connection.OwningProcess
-        }
-    } catch {
-        return $null
-    }
-    return $null
-}
-
 function Warn-AsusProcesses {
     $names = @("LightingService", "ArmouryCrate", "ArmourySocketServer", "ArmourySwAgent", "asus_framework", "Aura")
     $matches = @()
@@ -51,20 +41,12 @@ function Warn-AsusProcesses {
     }
 }
 
-function Get-SavedServerProcess {
-    if (-not (Test-Path -LiteralPath $PidPath)) {
-        return $null
-    }
-    $pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
-    if (-not ($pidText -match "^\d+$")) {
-        return $null
-    }
-    return Get-Process -Id ([int]$pidText) -ErrorAction SilentlyContinue
-}
-
 if ($Restart) {
     Write-Host "Restart requested. Stopping existing Sylphie server if present..."
-    & (Join-Path $PSScriptRoot "stop_sylphie.ps1")
+    & (Join-Path $PSScriptRoot "stop_sylphie.ps1") -Port $Port
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Restart requested but stop_sylphie.ps1 did not stop the existing server."
+    }
 }
 
 if ($BindHost -ne "127.0.0.1") {
@@ -90,26 +72,30 @@ if ($LASTEXITCODE -ne 0) {
     Fail "sylphie_rgb.exe doctor failed. Output:`n$doctorOutput"
 }
 
-$savedProcess = Get-SavedServerProcess
-if ($null -ne $savedProcess) {
-    Write-Host "Sylphie server already running from saved PID $($savedProcess.Id)."
-    Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
-    Write-Host "URL: $Url"
-    Write-Host "Exe: $ExePath"
-    Write-Host "Log: $LogPath"
-    if (-not $NoBrowser) { Start-Process $Url }
-    exit 0
-}
+$existingOwnerPid = Get-SylphiePortOwnerPid -Port $Port
+if ($null -ne $existingOwnerPid) {
+    $existingInfo = Get-SylphieProcessInfo -ProcessId $existingOwnerPid
+    Write-Host "Port $Port is already listening."
+    Write-SylphieProcessInfo -Label "Port owner process:" -ProcessInfo $existingInfo
 
-$existingPid = Get-ListeningPid $Port
-if ($null -ne $existingPid) {
-    Write-Host "Port $Port is already listening (pid $existingPid). Not starting another server."
-    Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
-    Write-Host "URL: $Url"
-    Write-Host "Exe: $ExePath"
-    Write-Host "Log: $LogPath"
-    if (-not $NoBrowser) { Start-Process $Url }
-    exit 0
+    $looksLikeSylphie = Test-SylphieProcessSignature `
+        -ProcessInfo $existingInfo `
+        -Port $Port `
+        -PortOwnerPid $existingOwnerPid
+
+    if ($looksLikeSylphie) {
+        Set-Content -LiteralPath $PidPath -Value ([string]$existingOwnerPid) -Encoding ASCII
+        Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
+        Write-Host "Existing Sylphie server detected. Not starting another."
+        Write-Host "Server PID: $existingOwnerPid"
+        Write-Host "URL: $Url"
+        Write-Host "Exe: $ExePath"
+        Write-Host "Log: $LogPath"
+        if (-not $NoBrowser) { Start-Process $Url }
+        exit 0
+    }
+
+    Fail "Port $Port is occupied by a process that does not look like Sylphie. Use status_sylphie.ps1 to inspect it."
 }
 
 $arguments = @(
@@ -129,16 +115,31 @@ $process = Start-Process `
     -WindowStyle Hidden `
     -PassThru
 
-Set-Content -LiteralPath $PidPath -Value ([string]$process.Id) -Encoding ASCII
 Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
 
-Start-Sleep -Milliseconds 700
-if ($process.HasExited) {
-    Remove-Item -LiteralPath $PidPath -ErrorAction SilentlyContinue
-    Fail "Sylphie server exited immediately. Check $LogPath and $ErrLogPath"
+$realOwnerPid = Wait-SylphiePortOwnerPid -Port $Port -TimeoutSeconds 5
+if ($null -eq $realOwnerPid) {
+    if ($process.HasExited) {
+        Fail "Sylphie server exited immediately. Check $LogPath and $ErrLogPath"
+    }
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    Fail "Sylphie server did not start listening on port $Port within 5 seconds. Check $LogPath and $ErrLogPath"
 }
 
-Write-Host "Sylphie server started. PID: $($process.Id)"
+Set-Content -LiteralPath $PidPath -Value ([string]$realOwnerPid) -Encoding ASCII
+
+$ownerInfo = Get-SylphieProcessInfo -ProcessId $realOwnerPid
+$ownerLooksLikeSylphie = Test-SylphieProcessSignature `
+    -ProcessInfo $ownerInfo `
+    -Port $Port `
+    -PortOwnerPid $realOwnerPid
+if (-not $ownerLooksLikeSylphie) {
+    Write-Warning "Process listening on port $Port does not match Sylphie signature."
+    Write-SylphieProcessInfo -Label "Listener process:" -ProcessInfo $ownerInfo
+}
+
+Write-Host "Sylphie server started."
+Write-Host "Server PID: $realOwnerPid"
 Write-Host "URL: $Url"
 Write-Host "Exe: $ExePath"
 Write-Host "Log: $LogPath"
