@@ -13,6 +13,7 @@ public:
     std::string doctor_json();
     std::string takeover_check_json();
     std::string bus_status_json();
+    void refresh_ownership();
 
     void set_rgb(const RgbColor& color);
     void off();
@@ -20,14 +21,15 @@ public:
     void recover_set(const RgbColor& color);
     void scene(const std::string& name, RgbColor& applied_color);
 
-    std::vector<std::string> current_conflicts() const;
+    std::vector<std::string> current_blocking_conflicts() const;
+    std::vector<std::string> current_warnings() const;
 
 private:
     void refuse_if_conflicted();
-    std::string conflicts_json(const std::vector<std::string>& conflicts) const;
 
     bool allow_conflicts_ = false;
     mutable std::mutex hardware_mutex_;
     mutable std::mutex conflict_mutex_;
-    std::vector<std::string> last_conflicts_;
+    std::vector<std::string> last_blocking_conflicts_;
+    std::vector<std::string> last_warnings_;
 };

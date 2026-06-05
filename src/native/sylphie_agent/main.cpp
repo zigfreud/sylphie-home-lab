@@ -159,6 +159,7 @@ public:
         }
 
         response.duration_ms = elapsed_ms(start);
+        state_.set_ownership(hardware_.current_blocking_conflicts(), hardware_.current_warnings());
         state_.finish_command(request.cmd, result_json, response.ok);
         response.state_json = state_.to_json();
         log_line(
@@ -176,6 +177,7 @@ private:
             return "{\"pong\":true}";
         }
         if (request.cmd == "status") {
+            hardware_.refresh_ownership();
             return "{\"status\":\"ok\"}";
         }
         if (request.cmd == "doctor") {
@@ -183,7 +185,6 @@ private:
         }
         if (request.cmd == "takeover_check") {
             const std::string result = hardware_.takeover_check_json();
-            state_.set_conflicts(hardware_.current_conflicts());
             return result;
         }
         if (request.cmd == "bus_status") {

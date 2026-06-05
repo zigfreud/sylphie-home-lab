@@ -734,6 +734,26 @@ void print_process_conflicts(const std::vector<ProcessMatch>& processes) {
     }
 }
 
+void print_ownership_conflicts(const OwnershipConflicts& conflicts) {
+    std::cout << "Blocking conflicts:\n";
+    if (conflicts.blocking_conflicts.empty()) {
+        std::cout << "  [ok] none\n";
+    } else {
+        for (const auto& item : conflicts.blocking_conflicts) {
+            std::cout << "  " << item << "\n";
+        }
+    }
+
+    std::cout << "Warnings:\n";
+    if (conflicts.warnings.empty()) {
+        std::cout << "  [ok] none\n";
+    } else {
+        for (const auto& item : conflicts.warnings) {
+            std::cout << "  " << item << "\n";
+        }
+    }
+}
+
 int run_bus_status() {
     Piix4Smbus smbus;
     const uint8_t status = smbus.host_status();
@@ -769,24 +789,24 @@ int run_takeover_check() {
         return kExitRuntimeError;
     }
 
-    const auto processes = find_asus_lighting_processes();
-    print_process_conflicts(processes);
+    const auto ownership = classify_process_matches(find_asus_lighting_processes());
+    print_ownership_conflicts(ownership);
     std::cout << "takeover-check performed reads only and did not write hardware.\n";
 
     if (busy_persistent) {
         return kExitSmbusBusy;
     }
-    if (!processes.empty()) {
+    if (!ownership.blocking_conflicts.empty()) {
         return kExitTakeoverConflict;
     }
     return kExitOk;
 }
 
 bool takeover_is_clear() {
-    const auto processes = find_asus_lighting_processes();
-    if (!processes.empty()) {
+    const auto ownership = classify_process_matches(find_asus_lighting_processes());
+    if (!ownership.blocking_conflicts.empty()) {
         std::cerr << "error: controller conflict detected\n";
-        print_process_conflicts(processes);
+        print_ownership_conflicts(ownership);
         return false;
     }
 

@@ -46,7 +46,7 @@ public:
     void finish_command(const std::string& cmd, const std::string& result_json, bool ok);
     void set_rgb(const std::string& rgb);
     void set_scene(const std::string& scene);
-    void set_conflicts(const std::vector<std::string>& conflicts);
+    void set_ownership(const std::vector<std::string>& blocking_conflicts, const std::vector<std::string>& warnings);
     void mark_recover();
 
     std::string to_json() const;
@@ -64,7 +64,8 @@ private:
     uint64_t command_count_ = 0;
     uint64_t failure_count_ = 0;
     std::string current_owner_status_ = "unknown";
-    std::vector<std::string> conflicting_processes_;
+    std::vector<std::string> blocking_conflicts_;
+    std::vector<std::string> warnings_;
     uint64_t last_recover_time_ = 0;
 };
 

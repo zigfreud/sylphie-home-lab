@@ -10,6 +10,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <sstream>
 
 namespace {
 std::string lower_ascii(std::string value) {
@@ -28,6 +29,16 @@ std::string strip_exe_suffix(const std::string& value) {
         return value.substr(0, value.size() - 4);
     }
     return value;
+}
+
+bool is_name_in_list(const std::string& name, const char* const* values, size_t count) {
+    const std::string lower = lower_ascii(name);
+    for (size_t i = 0; i < count; ++i) {
+        if (lower == lower_ascii(values[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 }
 
@@ -78,4 +89,45 @@ std::vector<ProcessMatch> find_asus_lighting_processes() {
 
     CloseHandle(snapshot);
     return matches;
+}
+
+bool process_match_is_blocking(const ProcessMatch& process) {
+    static const char* const blocking[] = {
+        "LightingService",
+        "Aura",
+        "OpenRGB",
+        "OpenAuraSDK",
+        "ArmourySocketServer",
+        "ArmourySwAgent",
+        "ArmouryHtmlDebugServer",
+    };
+    return is_name_in_list(process.matched_rule, blocking, sizeof(blocking) / sizeof(blocking[0]));
+}
+
+bool process_match_is_warning(const ProcessMatch& process) {
+    static const char* const warnings[] = {
+        "AsusCertService",
+        "ArmouryCrate.Service",
+        "ArmouryCrate.UserSessionHelper",
+        "asus_framework",
+    };
+    return is_name_in_list(process.matched_rule, warnings, sizeof(warnings) / sizeof(warnings[0]));
+}
+
+std::string process_match_summary(const ProcessMatch& process) {
+    std::ostringstream item;
+    item << process.process_name << " pid=" << process.pid << " rule=" << process.matched_rule;
+    return item.str();
+}
+
+OwnershipConflicts classify_process_matches(const std::vector<ProcessMatch>& processes) {
+    OwnershipConflicts result;
+    for (const auto& process : processes) {
+        if (process_match_is_blocking(process)) {
+            result.blocking_conflicts.push_back(process_match_summary(process));
+        } else if (process_match_is_warning(process)) {
+            result.warnings.push_back(process_match_summary(process));
+        }
+    }
+    return result;
 }

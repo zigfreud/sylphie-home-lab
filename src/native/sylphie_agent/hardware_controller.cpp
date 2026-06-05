@@ -16,15 +16,8 @@ std::string hex_byte(uint8_t value) {
     return out;
 }
 
-std::vector<std::string> process_conflict_names() {
-    std::vector<std::string> conflicts;
-    const auto processes = find_asus_lighting_processes();
-    for (const auto& process : processes) {
-        std::ostringstream item;
-        item << process.process_name << " pid=" << process.pid << " rule=" << process.matched_rule;
-        conflicts.push_back(item.str());
-    }
-    return conflicts;
+OwnershipConflicts current_ownership_conflicts() {
+    return classify_process_matches(find_asus_lighting_processes());
 }
 }
 
@@ -38,10 +31,11 @@ std::string HardwareController::doctor_json() {
     try {
         Piix4Smbus smbus;
         const auto snapshot = smbus.read_safe_register_snapshot();
-        const auto conflicts = process_conflict_names();
+        const auto ownership = current_ownership_conflicts();
         {
             std::lock_guard<std::mutex> lock(conflict_mutex_);
-            last_conflicts_ = conflicts;
+            last_blocking_conflicts_ = ownership.blocking_conflicts;
+            last_warnings_ = ownership.warnings;
         }
 
         out << "\"inpout32_loaded\":true,"
@@ -55,7 +49,10 @@ std::string HardwareController::doctor_json() {
             }
             out << "\"0x" << hex_byte(snapshot[i].first) << "\":\"0x" << hex_byte(snapshot[i].second) << "\"";
         }
-        out << "},\"conflicting_processes\":" << json_array(conflicts);
+        out << "},"
+            << "\"blocking_conflicts\":" << json_array(ownership.blocking_conflicts) << ","
+            << "\"warnings\":" << json_array(ownership.warnings) << ","
+            << "\"conflicting_processes\":" << json_array(ownership.blocking_conflicts);
     } catch (const std::exception& ex) {
         out << "\"inpout32_loaded\":false,\"error\":" << json_string(ex.what());
     }
@@ -80,18 +77,21 @@ std::string HardwareController::takeover_check_json() {
         return fail.str();
     }
 
-    const auto conflicts = process_conflict_names();
+    const auto ownership = current_ownership_conflicts();
     {
         std::lock_guard<std::mutex> lock(conflict_mutex_);
-        last_conflicts_ = conflicts;
+        last_blocking_conflicts_ = ownership.blocking_conflicts;
+        last_warnings_ = ownership.warnings;
     }
 
     std::ostringstream out;
     out << "{"
-        << "\"ok\":" << ((!busy_persistent && conflicts.empty()) ? "true" : "false") << ","
+        << "\"ok\":" << ((!busy_persistent && ownership.blocking_conflicts.empty()) ? "true" : "false") << ","
         << "\"status\":" << json_string(status_text) << ","
         << "\"busy_persistent\":" << (busy_persistent ? "true" : "false") << ","
-        << "\"conflicting_processes\":" << json_array(conflicts)
+        << "\"blocking_conflicts\":" << json_array(ownership.blocking_conflicts) << ","
+        << "\"warnings\":" << json_array(ownership.warnings) << ","
+        << "\"conflicting_processes\":" << json_array(ownership.blocking_conflicts)
         << "}";
     return out.str();
 }
@@ -112,6 +112,13 @@ std::string HardwareController::bus_status_json() {
         << "\"excludes_smbblkdat\":true"
         << "}";
     return out.str();
+}
+
+void HardwareController::refresh_ownership() {
+    const auto ownership = current_ownership_conflicts();
+    std::lock_guard<std::mutex> lock(conflict_mutex_);
+    last_blocking_conflicts_ = ownership.blocking_conflicts;
+    last_warnings_ = ownership.warnings;
 }
 
 void HardwareController::set_rgb(const RgbColor& color) {
@@ -151,18 +158,24 @@ void HardwareController::scene(const std::string& name, RgbColor& applied_color)
     set_rgb(applied_color);
 }
 
-std::vector<std::string> HardwareController::current_conflicts() const {
+std::vector<std::string> HardwareController::current_blocking_conflicts() const {
     std::lock_guard<std::mutex> lock(conflict_mutex_);
-    return last_conflicts_;
+    return last_blocking_conflicts_;
+}
+
+std::vector<std::string> HardwareController::current_warnings() const {
+    std::lock_guard<std::mutex> lock(conflict_mutex_);
+    return last_warnings_;
 }
 
 void HardwareController::refuse_if_conflicted() {
-    const auto conflicts = process_conflict_names();
+    const auto ownership = current_ownership_conflicts();
     {
         std::lock_guard<std::mutex> lock(conflict_mutex_);
-        last_conflicts_ = conflicts;
+        last_blocking_conflicts_ = ownership.blocking_conflicts;
+        last_warnings_ = ownership.warnings;
     }
-    if (!allow_conflicts_ && !conflicts.empty()) {
+    if (!allow_conflicts_ && !ownership.blocking_conflicts.empty()) {
         throw std::runtime_error("controller conflict detected");
     }
 }

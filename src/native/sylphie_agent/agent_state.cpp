@@ -151,10 +151,17 @@ void AgentState::set_scene(const std::string& scene) {
     last_scene_ = scene;
 }
 
-void AgentState::set_conflicts(const std::vector<std::string>& conflicts) {
+void AgentState::set_ownership(const std::vector<std::string>& blocking_conflicts, const std::vector<std::string>& warnings) {
     std::lock_guard<std::mutex> lock(mutex_);
-    conflicting_processes_ = conflicts;
-    current_owner_status_ = conflicts.empty() ? "clear" : "conflict";
+    blocking_conflicts_ = blocking_conflicts;
+    warnings_ = warnings;
+    if (!blocking_conflicts_.empty()) {
+        current_owner_status_ = "conflict";
+    } else if (!warnings_.empty()) {
+        current_owner_status_ = "warning";
+    } else {
+        current_owner_status_ = "clear";
+    }
 }
 
 void AgentState::mark_recover() {
@@ -177,7 +184,9 @@ std::string AgentState::to_json() const {
         << "\"command_count\":" << command_count_ << ","
         << "\"failure_count\":" << failure_count_ << ","
         << "\"current_owner_status\":" << json_string(current_owner_status_) << ","
-        << "\"conflicting_processes\":" << json_array(conflicting_processes_) << ","
+        << "\"blocking_conflicts\":" << json_array(blocking_conflicts_) << ","
+        << "\"warnings\":" << json_array(warnings_) << ","
+        << "\"conflicting_processes\":" << json_array(blocking_conflicts_) << ","
         << "\"last_recover_time\":" << (last_recover_time_ == 0 ? std::string("null") : std::to_string(last_recover_time_))
         << "}";
     return out.str();
