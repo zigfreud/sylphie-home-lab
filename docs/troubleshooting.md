@@ -57,12 +57,31 @@ Use `--include-armoury-core` only when the Tier 1 takeover is not enough.
 
 `recover-armoury-lite` is experimental. Use it only when the controller appears stuck/off, the confirmed direct RGB path is still unchanged, and normal `recover` did not rearm output.
 
+Variant A has been observed to turn the LEDs off on this hardware, so do not assume `0x8023=0x11` is correct. `STUCKED.log` showed Armoury touching `0x80A0`, `0x8027`, `0x8020`, `0x8023`, `0x80F1`, and `0x8022`, but it did not capture a safe candidate payload. Prefer granular raw-register dry-runs and one-register manual tests before trying bundled Armoury-lite variants again.
+
 Start with dry-runs:
 
 ```powershell
 bin\sylphie_rgb.exe recover-armoury-lite --variant a --dry-run --verbose
 bin\sylphie_rgb.exe recover-armoury-lite-set FFFFFF --variant a --dry-run --verbose
 ```
+
+Granular experimental helpers:
+
+```powershell
+bin\sylphie_rgb.exe reg-byte 8020 01 --dry-run --verbose
+bin\sylphie_rgb.exe reg-byte-apply 8020 01 --dry-run --verbose
+bin\sylphie_rgb.exe reg-block3 8101 FFFFFF --dry-run --verbose
+bin\sylphie_rgb.exe direct-rearm-minimal FFFFFF --dry-run --verbose
+```
+
+Actual raw register writes require:
+
+```powershell
+--i-accept-raw-register-write
+```
+
+`direct-rearm-minimal` only writes `0x8020=0x01`, applies, then uses the confirmed direct RGB path. It does not touch `0x8023`, `0x8027`, `0x80F1`, or `0x8022`.
 
 Manual test order:
 
