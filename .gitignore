@@ -25,6 +25,7 @@ dumps/
 *.txt
 *.nfo
 data/
+.sylphie/
 
 # Local reverse-engineering scratch
 tests/test_openrgb.py

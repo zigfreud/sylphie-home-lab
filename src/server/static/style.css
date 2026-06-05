@@ -39,6 +39,11 @@ button:hover {
   border-color: var(--accent);
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .app-shell {
   width: min(960px, calc(100% - 32px));
   margin: 0 auto;
@@ -72,6 +77,18 @@ h2 {
 p {
   color: var(--muted);
   margin-top: 6px;
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#statusText {
+  min-width: 88px;
+  color: var(--muted);
+  text-align: right;
 }
 
 .controls,
@@ -122,9 +139,14 @@ pre {
 
 @media (max-width: 640px) {
   .topbar,
-  .color-control {
+  .color-control,
+  .status-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  #statusText {
+    text-align: left;
   }
 
   input[type="color"] {

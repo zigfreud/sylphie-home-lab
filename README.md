@@ -93,6 +93,37 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/off
 
 The server never accepts arbitrary shell commands and calls the backend with `shell=False`.
 
+## Starting Sylphie
+
+From the project root:
+
+```bat
+.\start_sylphie.bat
+```
+
+The dashboard runs at:
+
+```text
+http://127.0.0.1:8765/
+```
+
+Status and stop commands:
+
+```powershell
+.\scripts\status_sylphie.ps1
+.\scripts\stop_sylphie.ps1
+```
+
+Startup validates `bin\sylphie_rgb.exe`, `bin\inpout32.dll`, the Python server, and `python` availability. It runs `sylphie_rgb.exe doctor` before starting the dashboard.
+
+Runtime state is written to `.sylphie/`, and server logs are written to:
+
+```text
+logs/server.log
+```
+
+ASUS Armoury Crate, Aura, and LightingService should be closed or stopped before issuing hardware write commands. Sylphie only warns about those processes; it does not kill or stop them automatically.
+
 ## Protocol Notes
 
 The confirmed protocol for the current MVP is documented in `docs/protocol/asus-prime-b450m-aura-smbus.md`.

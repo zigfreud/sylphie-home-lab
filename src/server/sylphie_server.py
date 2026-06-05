@@ -6,7 +6,10 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
+import time
 from urllib.parse import urlparse
+import uuid
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -19,6 +22,7 @@ SCENE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 class SylphieServer:
     def __init__(self, exe_path):
         self.exe_path = Path(exe_path)
+        self.queue = CommandQueue(self)
 
     def exe_exists(self):
         return self.exe_path.is_file()
@@ -62,6 +66,124 @@ class SylphieServer:
         result["exit_code"] = completed.returncode
         result["ok"] = completed.returncode == 0
         return result
+
+
+class CommandQueue:
+    def __init__(self, server_state):
+        self.server_state = server_state
+        self.condition = threading.Condition()
+        self.pending = None
+        self.running_command = None
+        self.completed = {}
+        self.last_command = None
+        self.last_result = None
+        self.last_rgb = None
+        self.last_scene = None
+        self.worker = threading.Thread(target=self.worker_loop, name="sylphie-command-worker", daemon=True)
+        self.worker.start()
+
+    def submit(self, kind, args, rgb=None, scene=None):
+        request_id = str(uuid.uuid4())
+        command = {
+            "request_id": request_id,
+            "kind": kind,
+            "args": args,
+            "rgb": rgb,
+            "scene": scene,
+            "submitted_at": time.time(),
+        }
+
+        with self.condition:
+            replaced = self.pending
+            if replaced is not None:
+                self.completed[replaced["request_id"]] = {
+                    "ok": False,
+                    "queued": False,
+                    "running": self.running_command is not None,
+                    "request_id": replaced["request_id"],
+                    "command": self.server_state.command_base() + replaced["args"],
+                    "stdout": "",
+                    "stderr": "superseded by newer pending command",
+                    "exit_code": None,
+                }
+
+            was_running = self.running_command is not None
+            self.pending = command
+            self.condition.notify_all()
+
+            if was_running:
+                return self.queued_response(command, running=True)
+
+            deadline = time.time() + COMMAND_TIMEOUT_SECONDS + 1
+            while request_id not in self.completed and time.time() < deadline:
+                self.condition.wait(timeout=0.1)
+
+            if request_id in self.completed:
+                return self.completed.pop(request_id)
+
+            return self.queued_response(command, running=self.running_command is not None)
+
+    def queued_response(self, command, running):
+        return {
+            "ok": True,
+            "queued": True,
+            "running": running,
+            "request_id": command["request_id"],
+            "command": self.server_state.command_base() + command["args"],
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
+        }
+
+    def worker_loop(self):
+        while True:
+            with self.condition:
+                while self.pending is None:
+                    self.condition.wait()
+                command = self.pending
+                self.pending = None
+                self.running_command = command
+                self.condition.notify_all()
+
+            result = self.server_state.run_backend(command["args"])
+            result["request_id"] = command["request_id"]
+            result["queued"] = False
+            result["running"] = False
+
+            with self.condition:
+                self.running_command = None
+                self.last_command = self.server_state.command_base() + command["args"]
+                self.last_result = result
+                if command["rgb"] is not None:
+                    self.last_rgb = command["rgb"]
+                    self.last_scene = None
+                if command["scene"] is not None:
+                    self.last_scene = command["scene"]
+                    if command["scene"] == "off":
+                        self.last_rgb = "000000"
+                if command["kind"] == "off":
+                    self.last_rgb = "000000"
+                    self.last_scene = "off"
+                self.completed[command["request_id"]] = result
+                self.condition.notify_all()
+
+    def state(self):
+        with self.condition:
+            return {
+                "ok": True,
+                "running": self.running_command is not None,
+                "pending": self.pending is not None,
+                "last_command": command_to_text(self.last_command),
+                "last_result": self.last_result,
+                "last_rgb": self.last_rgb,
+                "last_scene": self.last_scene,
+            }
+
+
+def command_to_text(command):
+    if not command:
+        return None
+    return " ".join(str(part) for part in command)
 
 
 def ensure_text(value):
@@ -204,6 +326,10 @@ def make_handler(server_state):
                 )
                 return
 
+            if path == "/api/state":
+                self.send_json(200, server_state.queue.state())
+                return
+
             if path == "/" or path.startswith("/static/"):
                 self.send_static_file(path)
                 return
@@ -221,12 +347,12 @@ def make_handler(server_state):
             try:
                 if path == "/api/set":
                     rgb = normalize_rgb(body.get("rgb"))
-                    result = server_state.run_backend(["set", rgb])
+                    result = server_state.queue.submit("set", ["set", rgb], rgb=rgb)
                 elif path == "/api/scene":
                     name = validate_scene_name(body.get("name"))
-                    result = server_state.run_backend(["scene", name])
+                    result = server_state.queue.submit("scene", ["scene", name], scene=name)
                 elif path == "/api/off":
-                    result = server_state.run_backend(["off"])
+                    result = server_state.queue.submit("off", ["off"], rgb="000000", scene="off")
                 else:
                     self.send_json(404, {"ok": False, "error": "not found"})
                     return
