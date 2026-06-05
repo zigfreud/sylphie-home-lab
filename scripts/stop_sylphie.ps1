@@ -82,7 +82,8 @@ if ($null -ne $savedPid) {
         $looksLikeSylphie = Test-SylphieProcessSignature `
             -ProcessInfo $savedInfo `
             -Port $ConfiguredPort `
-            -PortOwnerPid $portOwnerPid
+            -PortOwnerPid $portOwnerPid `
+            -AllowPortOwnerOnly
 
         if ($looksLikeSylphie) {
             Stop-SylphiePid -TargetPid $savedPid -Reason "saved PID matched Sylphie signature"

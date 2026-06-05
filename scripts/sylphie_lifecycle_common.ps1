@@ -94,7 +94,8 @@ function Test-SylphieProcessSignature {
     param(
         [object]$ProcessInfo,
         [int]$Port,
-        [int]$PortOwnerPid
+        [int]$PortOwnerPid,
+        [switch]$AllowPortOwnerOnly
     )
 
     if ($null -eq $ProcessInfo) {
@@ -111,7 +112,7 @@ function Test-SylphieProcessSignature {
     if (($commandLine -match [regex]::Escape([string]$Port)) -and ($ProcessInfo.PID -eq $PortOwnerPid)) {
         return $true
     }
-    if ($ProcessInfo.PID -eq $PortOwnerPid) {
+    if ($AllowPortOwnerOnly -and ($ProcessInfo.PID -eq $PortOwnerPid)) {
         return $true
     }
 

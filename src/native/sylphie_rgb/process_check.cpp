@@ -35,11 +35,16 @@ std::vector<ProcessMatch> find_asus_lighting_processes() {
     const char* rules[] = {
         "LightingService",
         "ArmouryCrate",
+        "ArmouryCrate.Service",
+        "ArmouryCrate.UserSessionHelper",
         "ArmourySocketServer",
         "ArmourySwAgent",
-        "ArmouryCrate.Service",
+        "ArmouryHtmlDebugServer",
         "asus_framework",
+        "AsusCertService",
         "Aura",
+        "OpenRGB",
+        "OpenAuraSDK",
     };
 
     std::vector<ProcessMatch> matches;

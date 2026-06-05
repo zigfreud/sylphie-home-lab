@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 namespace {
 std::string hex_register(uint16_t reg) {
@@ -42,6 +43,36 @@ void AuraEne::apply() {
 void AuraEne::enable_direct() {
     write_byte(kDirectModeRegister, 0x01);
     apply();
+}
+
+void AuraEne::disable_direct() {
+    write_byte(kDirectModeRegister, 0x00);
+    apply();
+}
+
+void AuraEne::recover() {
+    smbus_.log_verbose("recover: wait for SMBus and clear status");
+    if (!smbus_.wait_not_busy(500)) {
+        throw std::runtime_error("SMBus host stayed busy after 500ms before recovery");
+    }
+    smbus_.clear_status();
+
+    smbus_.log_verbose("recover: disable direct mode");
+    disable_direct();
+    Sleep(50);
+
+    smbus_.log_verbose("recover: enable direct mode");
+    enable_direct();
+    Sleep(50);
+
+    smbus_.log_verbose("recover: write RGB 000000 to direct register 0x8101");
+    write_block3(kRgbDirectRegister, 0x00, 0x00, 0x00);
+    apply();
+    Sleep(50);
+
+    smbus_.log_verbose("recover: repeat direct mode enable");
+    enable_direct();
+    Sleep(50);
 }
 
 void AuraEne::set_rgb(uint8_t r, uint8_t g, uint8_t b) {

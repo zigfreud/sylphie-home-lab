@@ -14,6 +14,8 @@ namespace {
 constexpr int kExitOk = 0;
 constexpr int kExitRuntimeError = 1;
 constexpr int kExitUsage = 2;
+constexpr int kExitTakeoverConflict = 10;
+constexpr int kExitSmbusBusy = 11;
 
 struct Scene {
     const char* name;
@@ -72,6 +74,10 @@ void print_help() {
         << "  sylphie_rgb.exe scene <name> [--dry-run] [--verbose]\n"
         << "  sylphie_rgb.exe scenes\n"
         << "  sylphie_rgb.exe calibrate --dry-run\n"
+        << "  sylphie_rgb.exe bus-status\n"
+        << "  sylphie_rgb.exe takeover-check\n"
+        << "  sylphie_rgb.exe recover [--verbose]\n"
+        << "  sylphie_rgb.exe recover-set RRGGBB [--verbose]\n"
         << "  sylphie_rgb.exe doctor\n"
         << "  sylphie_rgb.exe --help\n\n"
         << "Notes:\n"
@@ -206,21 +212,110 @@ int run_doctor() {
     return failed ? kExitRuntimeError : kExitOk;
 }
 
-int write_rgb(uint8_t r, uint8_t g, uint8_t b, bool force, bool verbose) {
+void print_process_conflicts(const std::vector<ProcessMatch>& processes) {
+    if (processes.empty()) {
+        std::cout << "[ok] no common ASUS/Aura/OpenRGB processes detected\n";
+        return;
+    }
+
+    std::cout << "[warn] detected processes that can contend for the SMBus:\n";
+    for (const auto& process : processes) {
+        std::cout << "  " << process.process_name << " pid=" << process.pid
+                  << " rule=" << process.matched_rule << "\n";
+    }
+}
+
+int run_bus_status() {
+    Piix4Smbus smbus;
+    const uint8_t status = smbus.host_status();
+
+    std::cout << "PIIX4 SMBus bus status\n";
+    std::cout << "base: 0x0B20\n";
+    std::cout << "status: 0x" << hex_byte(status) << "\n";
+    std::cout << "busy: " << (((status & Piix4Smbus::kStatusBusy) != 0) ? "true" : "false") << "\n";
+    std::cout << "CNT(+0x02): 0x" << hex_byte(smbus.read8(Piix4Smbus::kOffsetHostControl)) << "\n";
+    std::cout << "CMD(+0x03): 0x" << hex_byte(smbus.read8(Piix4Smbus::kOffsetHostCommand)) << "\n";
+    std::cout << "ADDR(+0x04): 0x" << hex_byte(smbus.read8(Piix4Smbus::kOffsetHostAddress)) << "\n";
+    std::cout << "D0(+0x05): 0x" << hex_byte(smbus.read8(Piix4Smbus::kOffsetHostData0)) << "\n";
+    std::cout << "D1(+0x06): 0x" << hex_byte(smbus.read8(Piix4Smbus::kOffsetHostData1)) << "\n";
+    std::cout << "safe snapshot excludes +0x07 / SMBBLKDAT\n";
+    return kExitOk;
+}
+
+int run_takeover_check() {
+    bool busy_persistent = false;
+
+    std::cout << "Sylphie takeover check\n";
+    try {
+        Piix4Smbus smbus;
+        const uint8_t status = smbus.host_status();
+        std::cout << "SMBus status: 0x" << hex_byte(status) << "\n";
+        std::cout << "SMBus busy: " << (((status & Piix4Smbus::kStatusBusy) != 0) ? "true" : "false") << "\n";
+        if (!smbus.wait_not_busy(500)) {
+            busy_persistent = true;
+            std::cout << "[warn] SMBus busy persisted after 500ms\n";
+        }
+    } catch (const std::exception& ex) {
+        std::cout << "[fail] " << ex.what() << "\n";
+        return kExitRuntimeError;
+    }
+
+    const auto processes = find_asus_lighting_processes();
+    print_process_conflicts(processes);
+    std::cout << "takeover-check performed reads only and did not write hardware.\n";
+
+    if (busy_persistent) {
+        return kExitSmbusBusy;
+    }
+    if (!processes.empty()) {
+        return kExitTakeoverConflict;
+    }
+    return kExitOk;
+}
+
+bool takeover_is_clear() {
+    const auto processes = find_asus_lighting_processes();
+    if (!processes.empty()) {
+        std::cerr << "error: controller conflict detected\n";
+        print_process_conflicts(processes);
+        return false;
+    }
+
+    Piix4Smbus smbus;
+    if (!smbus.wait_not_busy(500)) {
+        std::cerr << "error: SMBus busy persisted after 500ms\n";
+        return false;
+    }
+    return true;
+}
+
+int write_rgb(uint8_t r, uint8_t g, uint8_t b, bool force, bool verbose, bool recover_first) {
     Piix4Smbus smbus(Piix4Smbus::kDefaultBase, force, verbose);
     AuraEne aura(smbus);
+    if (recover_first) {
+        aura.recover();
+    }
     aura.set_rgb(r, g, b);
     std::cout << "ok: wrote RGB " << hex_byte(r) << hex_byte(g) << hex_byte(b)
               << " through Aura direct register " << hex_word(AuraEne::kRgbDirectRegister) << "\n";
     return kExitOk;
 }
 
-int run_rgb_command(const RgbColor& color, bool dry_run, bool force, bool verbose) {
+int run_rgb_command(
+    const RgbColor& color,
+    bool dry_run,
+    bool force,
+    bool verbose,
+    bool recover_first,
+    bool strict_takeover) {
     if (dry_run) {
         print_dry_run_sequence(color.r, color.g, color.b);
         return kExitOk;
     }
-    return write_rgb(color.r, color.g, color.b, force, verbose);
+    if (strict_takeover && !takeover_is_clear()) {
+        return kExitTakeoverConflict;
+    }
+    return write_rgb(color.r, color.g, color.b, force, verbose, recover_first);
 }
 
 int run_calibrate(bool dry_run, bool accepted_hardware_calibration, bool force, bool verbose) {
@@ -245,6 +340,23 @@ int run_calibrate(bool dry_run, bool accepted_hardware_calibration, bool force, 
     print_calibration_sequence(std::cout);
     return kExitOk;
 }
+
+int run_recover(bool verbose) {
+    Piix4Smbus smbus(Piix4Smbus::kDefaultBase, false, verbose);
+    AuraEne aura(smbus);
+    aura.recover();
+    std::cout << "ok: recovery sequence completed\n";
+    return kExitOk;
+}
+
+int run_recover_set(const RgbColor& color, bool verbose) {
+    Piix4Smbus smbus(Piix4Smbus::kDefaultBase, false, verbose);
+    AuraEne aura(smbus);
+    aura.recover();
+    aura.set_rgb(color.r, color.g, color.b);
+    std::cout << "ok: recovered and wrote RGB " << rgb_hex(color) << "\n";
+    return kExitOk;
+}
 }
 
 int main(int argc, char** argv) {
@@ -263,9 +375,11 @@ int main(int argc, char** argv) {
         const bool force = take_flag(args, "--force");
         const bool verbose = take_flag(args, "--verbose");
         const bool accepted_hardware_calibration = take_flag(args, "--i-accept-hardware-calibration");
+        const bool recover_first = take_flag(args, "--recover-first");
+        const bool strict_takeover = take_flag(args, "--strict-takeover");
 
         if (args.size() == 1 && args[0] == "doctor") {
-            if (dry_run || force || verbose || accepted_hardware_calibration) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || recover_first || strict_takeover) {
                 std::cerr << "error: doctor does not accept flags\n";
                 return kExitUsage;
             }
@@ -273,7 +387,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "scenes") {
-            if (dry_run || force || verbose || accepted_hardware_calibration) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || recover_first || strict_takeover) {
                 std::cerr << "error: scenes does not accept flags\n";
                 return kExitUsage;
             }
@@ -281,7 +395,48 @@ int main(int argc, char** argv) {
             return kExitOk;
         }
 
+        if (args.size() == 1 && args[0] == "bus-status") {
+            if (dry_run || force || verbose || accepted_hardware_calibration || recover_first || strict_takeover) {
+                std::cerr << "error: bus-status does not accept flags\n";
+                return kExitUsage;
+            }
+            return run_bus_status();
+        }
+
+        if (args.size() == 1 && args[0] == "takeover-check") {
+            if (dry_run || force || verbose || accepted_hardware_calibration || recover_first || strict_takeover) {
+                std::cerr << "error: takeover-check does not accept flags\n";
+                return kExitUsage;
+            }
+            return run_takeover_check();
+        }
+
+        if (args.size() == 1 && args[0] == "recover") {
+            if (dry_run || force || accepted_hardware_calibration || recover_first || strict_takeover) {
+                std::cerr << "error: recover only accepts --verbose\n";
+                return kExitUsage;
+            }
+            return run_recover(verbose);
+        }
+
+        if (args.size() == 2 && args[0] == "recover-set") {
+            if (dry_run || force || accepted_hardware_calibration || recover_first || strict_takeover) {
+                std::cerr << "error: recover-set only accepts --verbose\n";
+                return kExitUsage;
+            }
+            RgbColor color;
+            if (!parse_rgb_hex(args[1], color)) {
+                std::cerr << "error: expected color as exactly 6 hexadecimal digits, for example FF0000\n";
+                return kExitUsage;
+            }
+            return run_recover_set(color, verbose);
+        }
+
         if (args.size() == 1 && args[0] == "calibrate") {
+            if (recover_first || strict_takeover) {
+                std::cerr << "error: calibrate does not accept --recover-first or --strict-takeover\n";
+                return kExitUsage;
+            }
             return run_calibrate(dry_run, accepted_hardware_calibration, force, verbose);
         }
 
@@ -296,7 +451,7 @@ int main(int argc, char** argv) {
                 return kExitUsage;
             }
 
-            return run_rgb_command(color, dry_run, force, verbose);
+            return run_rgb_command(color, dry_run, force, verbose, recover_first, strict_takeover);
         }
 
         if (args.size() == 1 && args[0] == "off") {
@@ -305,7 +460,7 @@ int main(int argc, char** argv) {
                 return kExitUsage;
             }
             const RgbColor off = {0x00, 0x00, 0x00};
-            return run_rgb_command(off, dry_run, force, verbose);
+            return run_rgb_command(off, dry_run, force, verbose, recover_first, strict_takeover);
         }
 
         if (args.size() == 2 && args[0] == "scene") {
@@ -321,7 +476,7 @@ int main(int argc, char** argv) {
 
             std::cout << "Scene: " << scene->name << " RGB=" << rgb_hex(scene->color)
                       << " - " << scene->description << "\n";
-            return run_rgb_command(scene->color, dry_run, force, verbose);
+            return run_rgb_command(scene->color, dry_run, force, verbose, recover_first, strict_takeover);
         }
 
         std::cerr << "error: invalid command or arguments\n\n";

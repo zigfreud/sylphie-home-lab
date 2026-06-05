@@ -28,7 +28,20 @@ function Fail($Message) {
 }
 
 function Warn-AsusProcesses {
-    $names = @("LightingService", "ArmouryCrate", "ArmourySocketServer", "ArmourySwAgent", "asus_framework", "Aura")
+    $names = @(
+        "LightingService",
+        "ArmouryCrate",
+        "ArmouryCrate.Service",
+        "ArmouryCrate.UserSessionHelper",
+        "ArmourySocketServer",
+        "ArmourySwAgent",
+        "ArmouryHtmlDebugServer",
+        "asus_framework",
+        "AsusCertService",
+        "Aura",
+        "OpenRGB",
+        "OpenAuraSDK"
+    )
     $matches = @()
     foreach ($name in $names) {
         $matches += Get-Process -Name $name -ErrorAction SilentlyContinue

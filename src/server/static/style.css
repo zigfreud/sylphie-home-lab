@@ -106,6 +106,21 @@ p {
   margin-bottom: 16px;
 }
 
+.recovery-control {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.conflict-alert {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  color: #ffd8d8;
+  background: rgba(255, 107, 107, 0.12);
+}
+
 input[type="color"] {
   width: 64px;
   height: 40px;
@@ -140,6 +155,7 @@ pre {
 @media (max-width: 640px) {
   .topbar,
   .color-control,
+  .recovery-control,
   .status-actions {
     align-items: stretch;
     flex-direction: column;

@@ -25,6 +25,10 @@ sylphie_rgb.exe scene focus
 sylphie_rgb.exe scene movie
 sylphie_rgb.exe scene off
 sylphie_rgb.exe calibrate --dry-run
+sylphie_rgb.exe bus-status
+sylphie_rgb.exe takeover-check
+sylphie_rgb.exe recover
+sylphie_rgb.exe recover-set FF0000
 ```
 
 Use `--dry-run` with `set`, `off`, or `scene` to print the SMBus sequence without writing to hardware. Use `--verbose` with hardware write commands to print SMBus status and selected registers.
@@ -92,6 +96,29 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/off
 ```
 
 The server never accepts arbitrary shell commands and calls the backend with `shell=False`.
+
+## Controller Ownership and Recovery
+
+Do not run Sylphie hardware writes while Armoury Crate, Aura, OpenRGB, or `LightingService` owns the controller. The local API runs `takeover-check` before `set`, `scene`, and `off`; if a known controller process is detected, the API returns HTTP 409 and does not write.
+
+Useful checks:
+
+```bat
+sylphie_rgb.exe bus-status
+sylphie_rgb.exe takeover-check
+```
+
+If the color stops responding after switching between Sylphie and ASUS tools:
+
+1. Stop Sylphie: `.\scripts\stop_sylphie.ps1`
+2. Close the dashboard/browser tab.
+3. Close or stop Armoury/Aura/OpenRGB/LightingService.
+4. Run `sylphie_rgb.exe takeover-check`.
+5. Run `sylphie_rgb.exe recover --verbose`.
+6. Run `sylphie_rgb.exe recover-set FF0000`.
+7. Use a full power drain only if software recovery and ownership cleanup do not restore control.
+
+The recovery command only toggles the confirmed direct-mode path and writes direct RGB `000000`; it does not touch `0x8160`, streaming, or experimental registers.
 
 ## Starting Sylphie
 

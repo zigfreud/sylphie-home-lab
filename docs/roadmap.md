@@ -8,6 +8,8 @@ Local API/dashboard stability:
 - Python standard-library HTTP server wraps the backend for local browser control.
 - Write commands are serialized to avoid concurrent SMBus access.
 - Dashboard is local-first and binds to `127.0.0.1` by default.
+- Controller ownership checks run before API writes.
+- Conservative software recovery is available through the CLI and dashboard.
 
 ## Next Phases
 

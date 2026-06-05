@@ -12,15 +12,33 @@ const scenes = [
   "off",
 ];
 
+const sceneRgb = {
+  focus: "FFFFFF",
+  movie: "202060",
+  night: "300000",
+  reading: "FFC080",
+  cyberpunk: "FF0080",
+  deepblue: "0000FF",
+  red: "FF0000",
+  green: "00FF00",
+  blue: "0000FF",
+  white: "FFFFFF",
+  off: "000000",
+};
+
 const logOutput = document.getElementById("logOutput");
 const sceneButtons = document.getElementById("sceneButtons");
 const colorInput = document.getElementById("colorInput");
 const setColorButton = document.getElementById("setColorButton");
 const healthButton = document.getElementById("healthButton");
 const statusText = document.getElementById("statusText");
+const recoverButton = document.getElementById("recoverButton");
+const recoverLastButton = document.getElementById("recoverLastButton");
+const conflictAlert = document.getElementById("conflictAlert");
 
 let applying = false;
 let activeAction = null;
+let lastRequestedRgb = "FF0000";
 const sceneButtonElements = new Map();
 
 function log(payload) {
@@ -38,6 +56,7 @@ function summarizePayload(payload) {
     command: payload.command,
     exit_code: payload.exit_code,
     duration_ms: payload.duration_ms,
+    conflicting_processes: payload.conflicting_processes,
     stdout: payload.stdout,
     stderr: payload.stderr,
     error: payload.error,
@@ -63,14 +82,35 @@ function setApplying(value, label = "Applying...") {
   }
   setColorButton.disabled = value;
   healthButton.disabled = value;
+  recoverButton.disabled = value;
+  recoverLastButton.disabled = value;
   for (const button of sceneButtonElements.values()) {
     button.disabled = value;
   }
 }
 
+function updateConflictAlert(payload) {
+  const conflicts = payload && payload.conflicting_processes;
+  if (Array.isArray(conflicts) && conflicts.length > 0) {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = `Controller conflict detected: ${conflicts.join(", ")}. Close Armoury/Aura/OpenRGB before writing.`;
+    return;
+  }
+
+  if (payload && payload.error === "controller conflict detected") {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = "Controller conflict detected. Run Health for details and close Armoury/Aura/OpenRGB before writing.";
+    return;
+  }
+
+  conflictAlert.hidden = true;
+  conflictAlert.textContent = "";
+}
+
 async function requestJson(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json();
+  updateConflictAlert(payload);
   log(payload);
   return payload;
 }
@@ -102,8 +142,9 @@ async function runAction(actionKey, callback) {
 }
 
 async function setColor() {
-  const rgb = colorInput.value;
+  const rgb = colorInput.value.replace("#", "").toUpperCase();
   await runAction(`set:${rgb}`, () => {
+    lastRequestedRgb = rgb;
     return requestJson("/api/set", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -114,6 +155,10 @@ async function setColor() {
 
 async function setScene(name) {
   await runAction(`scene:${name}`, () => {
+    if (sceneRgb[name]) {
+      lastRequestedRgb = sceneRgb[name];
+    }
+
     if (name === "off") {
       return requestJson("/api/off", {method: "POST"});
     }
@@ -122,6 +167,23 @@ async function setScene(name) {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({name}),
+    });
+  });
+}
+
+async function recoverController() {
+  await runAction("recover", () => {
+    return requestJson("/api/recover", {method: "POST"});
+  });
+}
+
+async function recoverLastColor() {
+  const rgb = lastRequestedRgb || colorInput.value.replace("#", "").toUpperCase();
+  await runAction(`recover-set:${rgb}`, () => {
+    return requestJson("/api/recover-set", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rgb}),
     });
   });
 }
@@ -147,4 +209,6 @@ healthButton.addEventListener("click", async () => {
   }
 });
 setColorButton.addEventListener("click", setColor);
+recoverButton.addEventListener("click", recoverController);
+recoverLastButton.addEventListener("click", recoverLastColor);
 buildSceneButtons();

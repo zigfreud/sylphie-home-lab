@@ -76,3 +76,5 @@ Low RGB values may be below the visible threshold for the connected 12V analog s
 - The initial CLI only reports conflicting ASUS processes; it does not kill or stop services.
 - `doctor` must perform reads only and must not touch `SMBBLKDAT` / offset `+0x07`.
 - `off` writes direct RGB `000000`; it does not use mode-off registers.
+- `bus-status` and `takeover-check` are read-only diagnostics.
+- `recover` is a conservative software recovery path: it clears status, toggles direct mode through `0x8020`, applies with `0x80A0`, writes direct RGB `000000` through `0x8101`, and does not use `0x8160` or streaming.

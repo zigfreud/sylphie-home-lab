@@ -87,7 +87,36 @@ class SylphieServer:
             result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
         return result
 
-    def run_hardware_command(self, args, rgb=None, scene=None):
+    def takeover_check(self):
+        return self.run_backend(["takeover-check"], timeout_seconds=READ_TIMEOUT_SECONDS)
+
+    def controller_conflict_response(self, takeover):
+        exit_code = takeover.get("exit_code")
+        if exit_code == 0:
+            return None
+
+        if exit_code in (10, 11):
+            return (
+                409,
+                {
+                    "ok": False,
+                    "error": "controller conflict detected",
+                    "details": takeover,
+                    "applied": False,
+                },
+            )
+
+        return (
+            500,
+            {
+                "ok": False,
+                "error": "controller ownership check failed",
+                "details": takeover,
+                "applied": False,
+            },
+        )
+
+    def run_hardware_command(self, args, rgb=None, scene=None, check_takeover=True):
         command = self.command_base() + args
         acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
         if not acquired:
@@ -108,6 +137,16 @@ class SylphieServer:
         try:
             with self.state_lock:
                 self.current_command = command
+
+            if check_takeover:
+                takeover = self.takeover_check()
+                conflict = self.controller_conflict_response(takeover)
+                if conflict is not None:
+                    with self.state_lock:
+                        self.current_command = None
+                        self.last_command = command
+                        self.last_result = conflict[1]
+                    return conflict
 
             result = self.run_backend(args, timeout_seconds=WRITE_TIMEOUT_SECONDS)
             result["applied"] = result["ok"] and result["exit_code"] == 0
@@ -190,16 +229,25 @@ def file_mtime(path):
 
 
 def detect_asus_processes(doctor_output):
-    if "no common ASUS/Aura lighting processes detected" in doctor_output:
+    if (
+        "no common ASUS/Aura lighting processes detected" in doctor_output
+        or "no known controller ownership conflicts detected" in doctor_output
+    ):
         return []
 
     names = [
         "LightingService",
         "ArmouryCrate",
+        "ArmouryCrate.Service",
+        "ArmouryCrate.UserSessionHelper",
         "ArmourySocketServer",
         "ArmourySwAgent",
+        "ArmouryHtmlDebugServer",
         "asus_framework",
+        "AsusCertService",
         "Aura",
+        "OpenRGB",
+        "OpenAuraSDK",
     ]
     found = []
     for line in doctor_output.splitlines():
@@ -319,7 +367,11 @@ def make_handler(server_state):
             path = urlparse(self.path).path
             if path == "/api/health":
                 doctor = server_state.run_backend(["doctor"])
+                takeover = server_state.run_backend(["takeover-check"])
+                bus_status = server_state.run_backend(["bus-status"])
                 doctor_output = (doctor.get("stdout") or "") + "\n" + (doctor.get("stderr") or "")
+                takeover_output = (takeover.get("stdout") or "") + "\n" + (takeover.get("stderr") or "")
+                conflicts = sorted(set(detect_asus_processes(doctor_output) + detect_asus_processes(takeover_output)))
                 self.send_json(
                     200,
                     {
@@ -330,7 +382,10 @@ def make_handler(server_state):
                         "exe_exists": server_state.exe_exists(),
                         "exe_modified_time": file_mtime(server_state.exe_path),
                         "doctor": doctor,
-                        "asus_processes": detect_asus_processes(doctor_output),
+                        "takeover_check": takeover,
+                        "bus_status": bus_status,
+                        "conflicting_processes": conflicts,
+                        "asus_processes": conflicts,
                     },
                 )
                 return
@@ -350,6 +405,11 @@ def make_handler(server_state):
 
             if path == "/api/state":
                 self.send_json(200, server_state.state())
+                return
+
+            if path == "/api/bus-status":
+                bus_status = server_state.run_backend(["bus-status"])
+                self.send_json(200 if bus_status["ok"] else 500, bus_status)
                 return
 
             if path == "/api/debug/config":
@@ -379,6 +439,11 @@ def make_handler(server_state):
                     status, result = server_state.run_hardware_command(["scene", name], scene=name)
                 elif path == "/api/off":
                     status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off")
+                elif path == "/api/recover":
+                    status, result = server_state.run_hardware_command(["recover"], check_takeover=False)
+                elif path == "/api/recover-set":
+                    rgb = normalize_rgb(body.get("rgb"))
+                    status, result = server_state.run_hardware_command(["recover-set", rgb], rgb=rgb, check_takeover=False)
                 else:
                     self.send_json(404, {"ok": False, "error": "not found"})
                     return
