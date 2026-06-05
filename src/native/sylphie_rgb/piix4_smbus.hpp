@@ -67,8 +67,10 @@ private:
 
     uint16_t port(uint8_t offset) const;
     void start_transaction(uint8_t protocol) const;
-    void finish_transaction() const;
-    void ensure_ready_for_write(const char* operation) const;
+    void begin_transaction(const char* transaction_type) const;
+    void finish_transaction_after_setup(uint8_t protocol) const;
+    bool wait_not_busy_capture(uint32_t timeout_ms, uint8_t& before, uint8_t& after) const;
+    uint8_t read_final_status_after_wait() const;
     std::string busy_timeout_error(uint32_t timeout_ms) const;
     std::string status_error(uint8_t status) const;
 

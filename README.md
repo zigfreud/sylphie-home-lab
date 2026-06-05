@@ -24,23 +24,36 @@ sylphie_rgb.exe scenes
 sylphie_rgb.exe scene focus
 sylphie_rgb.exe scene movie
 sylphie_rgb.exe scene off
+sylphie_rgb.exe calibrate --dry-run
 ```
+
+Use `--dry-run` with `set`, `off`, or `scene` to print the SMBus sequence without writing to hardware. Use `--verbose` with hardware write commands to print SMBus status and selected registers.
+
+## Calibration and Scenes
 
 Available scenes:
 
-- `focus` - `FFFFFF` - strong neutral white for focused work
-- `movie` - `101030` - dark blue-purple bias light
-- `night` - `080000` - very low red for night use
-- `reading` - `FFE0B0` - warm white for reading
-- `cyberpunk` - `FF00A0` - strong magenta accent
+- `focus` - `FFFFFF` - strong neutral white
+- `movie` - `202060` - visible dark blue-purple bias light
+- `night` - `300000` - low red above visibility threshold
+- `reading` - `FFC080` - warm reading light
+- `cyberpunk` - `FF0080` - magenta accent
 - `deepblue` - `0000FF` - full blue
 - `red` - `FF0000` - full red
 - `green` - `00FF00` - full green
 - `blue` - `0000FF` - full blue
 - `white` - `FFFFFF` - full white
-- `off` - `000000` - turn off using direct RGB
+- `off` - `000000` - direct RGB off
 
-Use `--dry-run` with `set`, `off`, or `scene` to print the SMBus sequence without writing to hardware. Use `--verbose` with hardware write commands to print SMBus status and selected registers.
+Run:
+
+```bat
+sylphie_rgb.exe calibrate --dry-run
+```
+
+This prints the manual calibration sequence without writing to hardware. The calibration command does not auto-cycle colors by default; run each printed command manually and verify the visible result before continuing.
+
+Scene details are documented in `docs/scenes.md`.
 
 ## Build
 

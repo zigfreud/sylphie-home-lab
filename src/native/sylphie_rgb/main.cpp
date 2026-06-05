@@ -22,17 +22,27 @@ struct Scene {
 };
 
 const Scene kScenes[] = {
-    {"focus", {0xFF, 0xFF, 0xFF}, "strong neutral white for focused work"},
-    {"movie", {0x10, 0x10, 0x30}, "dark blue-purple bias light"},
-    {"night", {0x08, 0x00, 0x00}, "very low red for night use"},
-    {"reading", {0xFF, 0xE0, 0xB0}, "warm white for reading"},
-    {"cyberpunk", {0xFF, 0x00, 0xA0}, "strong magenta accent"},
+    {"focus", {0xFF, 0xFF, 0xFF}, "strong neutral white"},
+    {"movie", {0x20, 0x20, 0x60}, "visible dark blue-purple bias light"},
+    {"night", {0x30, 0x00, 0x00}, "low red above visibility threshold"},
+    {"reading", {0xFF, 0xC0, 0x80}, "warm reading light"},
+    {"cyberpunk", {0xFF, 0x00, 0x80}, "magenta accent"},
     {"deepblue", {0x00, 0x00, 0xFF}, "full blue"},
     {"red", {0xFF, 0x00, 0x00}, "full red"},
     {"green", {0x00, 0xFF, 0x00}, "full green"},
     {"blue", {0x00, 0x00, 0xFF}, "full blue"},
     {"white", {0xFF, 0xFF, 0xFF}, "full white"},
-    {"off", {0x00, 0x00, 0x00}, "turn off using direct RGB 000000"},
+    {"off", {0x00, 0x00, 0x00}, "direct RGB off"},
+};
+
+const Scene kCalibrationSteps[] = {
+    {"red", {0xFF, 0x00, 0x00}, "full red"},
+    {"green", {0x00, 0xFF, 0x00}, "full green"},
+    {"blue", {0x00, 0x00, 0xFF}, "full blue"},
+    {"white", {0xFF, 0xFF, 0xFF}, "full white"},
+    {"movie", {0x20, 0x20, 0x60}, "visible dark blue-purple bias light"},
+    {"night", {0x30, 0x00, 0x00}, "low red above visibility threshold"},
+    {"off", {0x00, 0x00, 0x00}, "direct RGB off"},
 };
 
 std::string hex_byte(uint8_t value) {
@@ -61,6 +71,7 @@ void print_help() {
         << "  sylphie_rgb.exe off [--dry-run] [--verbose]\n"
         << "  sylphie_rgb.exe scene <name> [--dry-run] [--verbose]\n"
         << "  sylphie_rgb.exe scenes\n"
+        << "  sylphie_rgb.exe calibrate --dry-run\n"
         << "  sylphie_rgb.exe doctor\n"
         << "  sylphie_rgb.exe --help\n\n"
         << "Notes:\n"
@@ -84,6 +95,12 @@ void print_dry_run_sequence(uint8_t r, uint8_t g, uint8_t b) {
     std::cout << "Dry run: no hardware writes will be performed.\n";
     std::cout << "SMBus base: 0x0B20\n";
     std::cout << "Aura/ENE addr7: 0x40\n\n";
+    std::cout << "Exact direct sequence:\n";
+    std::cout << "  select 0x8020 -> write 0x01\n";
+    std::cout << "  select 0x80A0 -> write 0x01\n";
+    std::cout << "  select 0x8101 -> block RGB payload "
+              << hex_byte(r) << ' ' << hex_byte(g) << ' ' << hex_byte(b) << "\n";
+    std::cout << "  select 0x80A0 -> write 0x01\n\n";
     std::cout << "1. WORD_DATA  addr=0x40 CMD=0x00 D0=0x80 D1=0x20 ; select register 0x8020\n";
     std::cout << "2. BYTE_DATA  addr=0x40 CMD=0x01 D0=0x01           ; enable direct mode\n";
     std::cout << "3. WORD_DATA  addr=0x40 CMD=0x00 D0=0x80 D1=0xA0 ; select register 0x80A0\n";
@@ -125,6 +142,17 @@ void print_scenes(std::ostream& out) {
 void print_unknown_scene(const std::string& name) {
     std::cerr << "error: unknown scene '" << name << "'\n\n";
     print_scenes(std::cerr);
+}
+
+void print_calibration_sequence(std::ostream& out) {
+    out << "Manual calibration sequence:\n";
+    out << "Run each command manually and verify the visible result before continuing.\n\n";
+    for (const Scene& step : kCalibrationSteps) {
+        out << std::left << std::setw(8) << step.name
+            << rgb_hex(step.color) << "  "
+            << "sylphie_rgb.exe set " << rgb_hex(step.color)
+            << "  ; " << step.description << "\n";
+    }
 }
 
 int run_doctor() {
@@ -194,6 +222,29 @@ int run_rgb_command(const RgbColor& color, bool dry_run, bool force, bool verbos
     }
     return write_rgb(color.r, color.g, color.b, force, verbose);
 }
+
+int run_calibrate(bool dry_run, bool accepted_hardware_calibration, bool force, bool verbose) {
+    if (force || verbose) {
+        std::cerr << "error: calibrate does not accept --force or --verbose\n";
+        return kExitUsage;
+    }
+
+    if (!dry_run && !accepted_hardware_calibration) {
+        std::cerr
+            << "error: calibrate refuses to run without --dry-run unless "
+            << "--i-accept-hardware-calibration is passed\n\n";
+        print_calibration_sequence(std::cerr);
+        return kExitUsage;
+    }
+
+    if (dry_run) {
+        std::cout << "Dry run: calibration will not write hardware.\n\n";
+    } else {
+        std::cout << "Manual hardware calibration acknowledged. No automatic color cycle will run.\n\n";
+    }
+    print_calibration_sequence(std::cout);
+    return kExitOk;
+}
 }
 
 int main(int argc, char** argv) {
@@ -211,25 +262,34 @@ int main(int argc, char** argv) {
         const bool dry_run = take_flag(args, "--dry-run");
         const bool force = take_flag(args, "--force");
         const bool verbose = take_flag(args, "--verbose");
+        const bool accepted_hardware_calibration = take_flag(args, "--i-accept-hardware-calibration");
 
         if (args.size() == 1 && args[0] == "doctor") {
-            if (dry_run || force || verbose) {
-                std::cerr << "error: doctor does not accept --dry-run, --force, or --verbose\n";
+            if (dry_run || force || verbose || accepted_hardware_calibration) {
+                std::cerr << "error: doctor does not accept flags\n";
                 return kExitUsage;
             }
             return run_doctor();
         }
 
         if (args.size() == 1 && args[0] == "scenes") {
-            if (dry_run || force || verbose) {
-                std::cerr << "error: scenes does not accept --dry-run, --force, or --verbose\n";
+            if (dry_run || force || verbose || accepted_hardware_calibration) {
+                std::cerr << "error: scenes does not accept flags\n";
                 return kExitUsage;
             }
             print_scenes(std::cout);
             return kExitOk;
         }
 
+        if (args.size() == 1 && args[0] == "calibrate") {
+            return run_calibrate(dry_run, accepted_hardware_calibration, force, verbose);
+        }
+
         if (args.size() == 2 && args[0] == "set") {
+            if (accepted_hardware_calibration) {
+                std::cerr << "error: set does not accept --i-accept-hardware-calibration\n";
+                return kExitUsage;
+            }
             RgbColor color;
             if (!parse_rgb_hex(args[1], color)) {
                 std::cerr << "error: expected color as exactly 6 hexadecimal digits, for example FF0000\n";
@@ -240,11 +300,19 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "off") {
+            if (accepted_hardware_calibration) {
+                std::cerr << "error: off does not accept --i-accept-hardware-calibration\n";
+                return kExitUsage;
+            }
             const RgbColor off = {0x00, 0x00, 0x00};
             return run_rgb_command(off, dry_run, force, verbose);
         }
 
         if (args.size() == 2 && args[0] == "scene") {
+            if (accepted_hardware_calibration) {
+                std::cerr << "error: scene does not accept --i-accept-hardware-calibration\n";
+                return kExitUsage;
+            }
             const Scene* scene = find_scene(args[1]);
             if (scene == nullptr) {
                 print_unknown_scene(args[1]);

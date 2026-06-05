@@ -112,18 +112,20 @@ void Piix4Smbus::clear_status() const {
 }
 
 bool Piix4Smbus::wait_not_busy(uint32_t timeout_ms) const {
+    uint8_t before = 0;
+    uint8_t after = 0;
+    return wait_not_busy_capture(timeout_ms, before, after);
+}
+
+bool Piix4Smbus::wait_not_busy_capture(uint32_t timeout_ms, uint8_t& before, uint8_t& after) const {
     uint8_t status = host_status();
-    if (verbose_) {
-        std::cout << "verbose: status before wait: " << hex8(status) << "\n";
-    }
+    before = status;
 
     const DWORD start = GetTickCount();
     do {
         last_wait_status_ = status;
         if ((status & kStatusBusy) == 0) {
-            if (verbose_) {
-                std::cout << "verbose: status after wait: " << hex8(status) << "\n";
-            }
+            after = status;
             return true;
         }
         Sleep(1);
@@ -131,9 +133,7 @@ bool Piix4Smbus::wait_not_busy(uint32_t timeout_ms) const {
     } while ((GetTickCount() - start) < timeout_ms);
 
     last_wait_status_ = host_status();
-    if (verbose_) {
-        std::cout << "verbose: status after wait: " << hex8(last_wait_status_) << "\n";
-    }
+    after = last_wait_status_;
     return (last_wait_status_ & kStatusBusy) == 0;
 }
 
@@ -160,33 +160,63 @@ void Piix4Smbus::start_transaction(uint8_t protocol) const {
     write8(kOffsetHostControl, static_cast<uint8_t>(protocol | kStart));
 }
 
-void Piix4Smbus::finish_transaction() const {
-    if (!wait_not_busy(500)) {
-        throw std::runtime_error(busy_timeout_error(500));
+uint8_t Piix4Smbus::read_final_status_after_wait() const {
+    uint8_t status = host_status();
+    if ((status & kStatusBusy) == 0) {
+        return status;
     }
 
-    const uint8_t status = host_status();
-    if (verbose_) {
-        std::cout << "verbose: final status: " << hex8(status) << "\n";
+    uint8_t before = status;
+    uint8_t after = status;
+    if (!wait_not_busy_capture(500, before, after)) {
+        throw std::runtime_error(busy_timeout_error(500));
     }
-    if ((status & (kStatusFailed | kStatusBusError | kStatusDeviceError)) != 0) {
-        throw std::runtime_error(status_error(status));
+    return after;
+}
+
+void Piix4Smbus::begin_transaction(const char* transaction_type) const {
+    log_verbose(std::string("transaction type: ") + transaction_type);
+
+    uint8_t status_before_pre_wait = 0;
+    uint8_t status_after_pre_wait = 0;
+    if (!wait_not_busy_capture(500, status_before_pre_wait, status_after_pre_wait)) {
+        if (!allow_busy_override_) {
+            throw std::runtime_error(busy_timeout_error(500));
+        }
+        log_verbose(std::string("--force continuing despite busy before ") + transaction_type);
+    }
+
+    if (verbose_) {
+        std::cout << "verbose: status before pre-wait: " << hex8(status_before_pre_wait) << "\n";
+        std::cout << "verbose: status after pre-wait: " << hex8(status_after_pre_wait) << "\n";
     }
 
     clear_status();
+    const uint8_t status_after_clear = host_status();
+    if (verbose_) {
+        std::cout << "verbose: status after clear: " << hex8(status_after_clear) << "\n";
+    }
 }
 
-void Piix4Smbus::ensure_ready_for_write(const char* operation) const {
-    log_verbose(std::string("transaction type: ") + operation);
-    if (wait_not_busy(500)) {
-        return;
-    }
+void Piix4Smbus::finish_transaction_after_setup(uint8_t protocol) const {
+    start_transaction(protocol);
 
-    if (!allow_busy_override_) {
+    uint8_t status_before_transaction_wait = 0;
+    uint8_t status_after_transaction_wait = 0;
+    if (!wait_not_busy_capture(500, status_before_transaction_wait, status_after_transaction_wait)) {
         throw std::runtime_error(busy_timeout_error(500));
     }
 
-    log_verbose(std::string("--force continuing despite busy before ") + operation);
+    const uint8_t final_status = read_final_status_after_wait();
+    if (verbose_) {
+        std::cout << "verbose: status after transaction wait: "
+                  << hex8(status_after_transaction_wait) << "\n";
+        std::cout << "verbose: final status: " << hex8(final_status) << "\n";
+    }
+
+    if ((final_status & (kStatusFailed | kStatusBusError | kStatusDeviceError)) != 0) {
+        throw std::runtime_error(status_error(final_status));
+    }
 }
 
 std::string Piix4Smbus::busy_timeout_error(uint32_t timeout_ms) const {
@@ -211,29 +241,28 @@ std::string Piix4Smbus::status_error(uint8_t status) const {
 }
 
 void Piix4Smbus::write_byte_data(uint8_t addr7, uint8_t command, uint8_t data0) const {
-    ensure_ready_for_write("BYTE_DATA write");
-    clear_status();
+    begin_transaction("BYTE_DATA");
     write8(kOffsetHostAddress, static_cast<uint8_t>((addr7 << 1) | kWrite));
     write8(kOffsetHostCommand, command);
     write8(kOffsetHostData0, data0);
-    start_transaction(kPiix4ByteData);
-    finish_transaction();
+    finish_transaction_after_setup(kPiix4ByteData);
 }
 
 void Piix4Smbus::write_word_data(uint8_t addr7, uint8_t command, uint8_t data0, uint8_t data1) const {
-    ensure_ready_for_write("WORD_DATA write");
-    clear_status();
+    begin_transaction("WORD_DATA");
     write8(kOffsetHostAddress, static_cast<uint8_t>((addr7 << 1) | kWrite));
     write8(kOffsetHostCommand, command);
     write8(kOffsetHostData0, data0);
     write8(kOffsetHostData1, data1);
-    start_transaction(kPiix4WordData);
-    finish_transaction();
+    finish_transaction_after_setup(kPiix4WordData);
 }
 
 void Piix4Smbus::write_block3(uint8_t addr7, uint8_t command, const uint8_t payload[3]) const {
-    ensure_ready_for_write("BLOCK_DATA write");
-    clear_status();
+    begin_transaction("BLOCK_DATA");
+    if (verbose_) {
+        std::cout << "verbose: payload: " << hex8(payload[0]) << ' ' << hex8(payload[1])
+                  << ' ' << hex8(payload[2]) << "\n";
+    }
     write8(kOffsetHostAddress, static_cast<uint8_t>((addr7 << 1) | kWrite));
     write8(kOffsetHostCommand, command);
     write8(kOffsetHostData0, 0x03);
@@ -241,8 +270,7 @@ void Piix4Smbus::write_block3(uint8_t addr7, uint8_t command, const uint8_t payl
     write8(kOffsetBlockData, payload[0]);
     write8(kOffsetBlockData, payload[1]);
     write8(kOffsetBlockData, payload[2]);
-    start_transaction(kPiix4BlockData);
-    finish_transaction();
+    finish_transaction_after_setup(kPiix4BlockData);
 }
 
 std::vector<std::pair<uint8_t, uint8_t>> Piix4Smbus::read_safe_register_snapshot() const {

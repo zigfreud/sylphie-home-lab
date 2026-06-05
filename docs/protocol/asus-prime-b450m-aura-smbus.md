@@ -61,9 +61,11 @@ Verified visual results:
 - `00FF00`: green
 - `0000FF`: blue
 
+Low RGB values may be below the visible threshold for the connected 12V analog strip or room lighting. Scenes such as `movie` and `night` should use calibrated low-but-visible values rather than extremely small channel values.
+
 ## Known Bad Or Unstable Paths
 
-- `0x8100` was one byte early and is not the correct direct RGB register.
+- `0x8100` was one byte early and produced incorrect behavior. `0x8101` is the correct direct RGB register for the confirmed MVP path.
 - `0x8160` static/effect path is not part of the MVP.
 - Stream/probe tools are research only and must not become the public API.
 - Experimental raw-block/probe code should not be used as runtime surface.
