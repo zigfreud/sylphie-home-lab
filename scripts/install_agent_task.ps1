@@ -5,9 +5,20 @@ param(
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "sylphie_agent_common.ps1")
 
+function Test-IsAdministrator {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 $ProjectRoot = Get-SylphieProjectRoot
 $ExePath = Get-SylphieAgentExePath -ProjectRoot $ProjectRoot
 $PipeName = Get-SylphieAgentPipeName
+
+if (-not (Test-IsAdministrator)) {
+    Write-Error "install_agent_task.ps1 must be run from an elevated PowerShell because the SylphieAgent task uses highest privileges. Open PowerShell as Administrator, cd to the project root, then run .\scripts\install_agent_task.ps1"
+    exit 1
+}
 
 if (-not (Test-Path -LiteralPath $ExePath)) {
     Write-Error "Cannot install Scheduled Task because sylphie_agent.exe was not found: $ExePath"
@@ -26,7 +37,7 @@ $principal = New-ScheduledTaskPrincipal `
     -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
-    -DisallowStartIfOnBatteries:$false `
+    -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
 Register-ScheduledTask `
