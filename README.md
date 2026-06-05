@@ -20,15 +20,27 @@ sylphie_rgb.exe set FF0000
 sylphie_rgb.exe set 00FF00
 sylphie_rgb.exe set 0000FF
 sylphie_rgb.exe off
-```
-
-Planned higher-level scene command:
-
-```bat
+sylphie_rgb.exe scenes
 sylphie_rgb.exe scene focus
+sylphie_rgb.exe scene movie
+sylphie_rgb.exe scene off
 ```
 
-Use `--dry-run` with `set` or `off` to print the SMBus sequence without writing to hardware.
+Available scenes:
+
+- `focus` - `FFFFFF` - strong neutral white for focused work
+- `movie` - `101030` - dark blue-purple bias light
+- `night` - `080000` - very low red for night use
+- `reading` - `FFE0B0` - warm white for reading
+- `cyberpunk` - `FF00A0` - strong magenta accent
+- `deepblue` - `0000FF` - full blue
+- `red` - `FF0000` - full red
+- `green` - `00FF00` - full green
+- `blue` - `0000FF` - full blue
+- `white` - `FFFFFF` - full white
+- `off` - `000000` - turn off using direct RGB
+
+Use `--dry-run` with `set`, `off`, or `scene` to print the SMBus sequence without writing to hardware. Use `--verbose` with hardware write commands to print SMBus status and selected registers.
 
 ## Build
 

@@ -15,6 +15,26 @@ constexpr int kExitOk = 0;
 constexpr int kExitRuntimeError = 1;
 constexpr int kExitUsage = 2;
 
+struct Scene {
+    const char* name;
+    RgbColor color;
+    const char* description;
+};
+
+const Scene kScenes[] = {
+    {"focus", {0xFF, 0xFF, 0xFF}, "strong neutral white for focused work"},
+    {"movie", {0x10, 0x10, 0x30}, "dark blue-purple bias light"},
+    {"night", {0x08, 0x00, 0x00}, "very low red for night use"},
+    {"reading", {0xFF, 0xE0, 0xB0}, "warm white for reading"},
+    {"cyberpunk", {0xFF, 0x00, 0xA0}, "strong magenta accent"},
+    {"deepblue", {0x00, 0x00, 0xFF}, "full blue"},
+    {"red", {0xFF, 0x00, 0x00}, "full red"},
+    {"green", {0x00, 0xFF, 0x00}, "full green"},
+    {"blue", {0x00, 0x00, 0xFF}, "full blue"},
+    {"white", {0xFF, 0xFF, 0xFF}, "full white"},
+    {"off", {0x00, 0x00, 0x00}, "turn off using direct RGB 000000"},
+};
+
 std::string hex_byte(uint8_t value) {
     std::ostringstream oss;
     oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value);
@@ -39,11 +59,14 @@ void print_help() {
         << "Usage:\n"
         << "  sylphie_rgb.exe set RRGGBB [--dry-run] [--verbose]\n"
         << "  sylphie_rgb.exe off [--dry-run] [--verbose]\n"
+        << "  sylphie_rgb.exe scene <name> [--dry-run] [--verbose]\n"
+        << "  sylphie_rgb.exe scenes\n"
         << "  sylphie_rgb.exe doctor\n"
         << "  sylphie_rgb.exe --help\n\n"
         << "Notes:\n"
-        << "  set/off use Aura direct RGB register 0x8101 with payload order R G B.\n"
+        << "  set/off/scene use Aura direct RGB register 0x8101 with payload order R G B.\n"
         << "  off writes RGB 000000 through the same direct RGB path.\n"
+        << "  scene off uses the same direct RGB path as off.\n"
         << "  inpout32.dll must be next to sylphie_rgb.exe or loadable by Windows.\n";
 }
 
@@ -71,6 +94,37 @@ void print_dry_run_sequence(uint8_t r, uint8_t g, uint8_t b) {
               << " ; write RGB direct\n";
     std::cout << "7. WORD_DATA  addr=0x40 CMD=0x00 D0=0x80 D1=0xA0 ; select register 0x80A0\n";
     std::cout << "8. BYTE_DATA  addr=0x40 CMD=0x01 D0=0x01           ; apply\n";
+}
+
+std::string rgb_hex(const RgbColor& color) {
+    return hex_byte(color.r) + hex_byte(color.g) + hex_byte(color.b);
+}
+
+const Scene* find_scene(const std::string& name) {
+    for (const Scene& scene : kScenes) {
+        if (name == scene.name) {
+            return &scene;
+        }
+    }
+    return nullptr;
+}
+
+void print_scenes(std::ostream& out) {
+    out << "Available scenes:\n";
+    out << std::left << std::setw(12) << "Name"
+        << std::setw(8) << "RGB"
+        << "Description\n";
+    out << std::string(60, '-') << "\n";
+    for (const Scene& scene : kScenes) {
+        out << std::left << std::setw(12) << scene.name
+            << std::setw(8) << rgb_hex(scene.color)
+            << scene.description << "\n";
+    }
+}
+
+void print_unknown_scene(const std::string& name) {
+    std::cerr << "error: unknown scene '" << name << "'\n\n";
+    print_scenes(std::cerr);
 }
 
 int run_doctor() {
@@ -132,6 +186,14 @@ int write_rgb(uint8_t r, uint8_t g, uint8_t b, bool force, bool verbose) {
               << " through Aura direct register " << hex_word(AuraEne::kRgbDirectRegister) << "\n";
     return kExitOk;
 }
+
+int run_rgb_command(const RgbColor& color, bool dry_run, bool force, bool verbose) {
+    if (dry_run) {
+        print_dry_run_sequence(color.r, color.g, color.b);
+        return kExitOk;
+    }
+    return write_rgb(color.r, color.g, color.b, force, verbose);
+}
 }
 
 int main(int argc, char** argv) {
@@ -158,6 +220,15 @@ int main(int argc, char** argv) {
             return run_doctor();
         }
 
+        if (args.size() == 1 && args[0] == "scenes") {
+            if (dry_run || force || verbose) {
+                std::cerr << "error: scenes does not accept --dry-run, --force, or --verbose\n";
+                return kExitUsage;
+            }
+            print_scenes(std::cout);
+            return kExitOk;
+        }
+
         if (args.size() == 2 && args[0] == "set") {
             RgbColor color;
             if (!parse_rgb_hex(args[1], color)) {
@@ -165,19 +236,24 @@ int main(int argc, char** argv) {
                 return kExitUsage;
             }
 
-            if (dry_run) {
-                print_dry_run_sequence(color.r, color.g, color.b);
-                return kExitOk;
-            }
-            return write_rgb(color.r, color.g, color.b, force, verbose);
+            return run_rgb_command(color, dry_run, force, verbose);
         }
 
         if (args.size() == 1 && args[0] == "off") {
-            if (dry_run) {
-                print_dry_run_sequence(0x00, 0x00, 0x00);
-                return kExitOk;
+            const RgbColor off = {0x00, 0x00, 0x00};
+            return run_rgb_command(off, dry_run, force, verbose);
+        }
+
+        if (args.size() == 2 && args[0] == "scene") {
+            const Scene* scene = find_scene(args[1]);
+            if (scene == nullptr) {
+                print_unknown_scene(args[1]);
+                return kExitUsage;
             }
-            return write_rgb(0x00, 0x00, 0x00, force, verbose);
+
+            std::cout << "Scene: " << scene->name << " RGB=" << rgb_hex(scene->color)
+                      << " - " << scene->description << "\n";
+            return run_rgb_command(scene->color, dry_run, force, verbose);
         }
 
         std::cerr << "error: invalid command or arguments\n\n";
