@@ -75,6 +75,32 @@ void AuraEne::recover() {
     Sleep(50);
 }
 
+void AuraEne::recover_armoury_lite(char variant) {
+    smbus_.log_verbose(std::string("recover-armoury-lite variant ") + variant);
+
+    if (variant == 'b' || variant == 'c') {
+        smbus_.log_verbose("armoury-lite: initial apply");
+        apply();
+    }
+
+    smbus_.log_verbose("armoury-lite: write 0x8027 = 0x00");
+    write_byte(kArmouryLiteRegister8027, 0x00);
+
+    smbus_.log_verbose("armoury-lite: write 0x8023 = 0x11");
+    write_byte(kArmouryLiteRegister8023, 0x11);
+
+    smbus_.log_verbose("armoury-lite: write 0x8020 = 0x01");
+    write_byte(kDirectModeRegister, 0x01);
+
+    if (variant == 'c') {
+        smbus_.log_verbose("armoury-lite: write 0x80F1 = 0x01");
+        write_byte(kArmouryLiteRegister80F1, 0x01);
+    }
+
+    smbus_.log_verbose("armoury-lite: final apply");
+    apply();
+}
+
 void AuraEne::set_rgb(uint8_t r, uint8_t g, uint8_t b) {
     enable_direct();
     write_block3(kRgbDirectRegister, r, g, b);

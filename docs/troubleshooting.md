@@ -53,6 +53,27 @@ bin\sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services
 
 Use `--include-armoury-core` only when the Tier 1 takeover is not enough.
 
+## Armoury-Lite Recover
+
+`recover-armoury-lite` is experimental. Use it only when the controller appears stuck/off, the confirmed direct RGB path is still unchanged, and normal `recover` did not rearm output.
+
+Start with dry-runs:
+
+```powershell
+bin\sylphie_rgb.exe recover-armoury-lite --variant a --dry-run --verbose
+bin\sylphie_rgb.exe recover-armoury-lite-set FFFFFF --variant a --dry-run --verbose
+```
+
+Manual test order:
+
+```powershell
+bin\sylphie_rgb.exe recover-armoury-lite-set FFFFFF --variant a --verbose
+bin\sylphie_rgb.exe recover-armoury-lite-set FFFFFF --variant b --verbose
+bin\sylphie_rgb.exe recover-armoury-lite-set FFFFFF --variant c --verbose
+```
+
+The variants are based on observed Armoury recovery writes around `0x8027`, `0x8023`, `0x8020`, `0x80A0`, and optionally `0x80F1`. They do not use `0x8100`, `0x8160`, or streaming, and they do not change normal `set`, `off`, or `scene` behavior.
+
 ## LightingService Keeps Coming Back
 
 Some ASUS components can restart helpers after they are stopped. Run:

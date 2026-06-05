@@ -10,6 +10,9 @@ public:
     static constexpr uint16_t kDirectModeRegister = 0x8020;
     static constexpr uint16_t kApplyRegister = 0x80A0;
     static constexpr uint16_t kRgbDirectRegister = 0x8101;
+    static constexpr uint16_t kArmouryLiteRegister8027 = 0x8027;
+    static constexpr uint16_t kArmouryLiteRegister8023 = 0x8023;
+    static constexpr uint16_t kArmouryLiteRegister80F1 = 0x80F1;
 
     explicit AuraEne(Piix4Smbus& smbus);
 
@@ -20,6 +23,7 @@ public:
     void enable_direct();
     void disable_direct();
     void recover();
+    void recover_armoury_lite(char variant);
     void set_rgb(uint8_t r, uint8_t g, uint8_t b);
     void off();
 

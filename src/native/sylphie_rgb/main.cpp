@@ -202,6 +202,8 @@ void print_help() {
         << "  sylphie_rgb.exe restore-services\n"
         << "  sylphie_rgb.exe recover [--verbose]\n"
         << "  sylphie_rgb.exe recover-set RRGGBB [--verbose]\n"
+        << "  sylphie_rgb.exe recover-armoury-lite --variant a|b|c [--dry-run] [--verbose]\n"
+        << "  sylphie_rgb.exe recover-armoury-lite-set RRGGBB --variant a|b|c [--dry-run] [--verbose]\n"
         << "  sylphie_rgb.exe doctor\n"
         << "  sylphie_rgb.exe --help\n\n"
         << "Notes:\n"
@@ -217,6 +219,22 @@ bool take_flag(std::vector<std::string>& args, const std::string& flag) {
             args.erase(it);
             return true;
         }
+    }
+    return false;
+}
+
+bool take_option(std::vector<std::string>& args, const std::string& option, std::string& value) {
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (*it != option) {
+            continue;
+        }
+        auto value_it = it + 1;
+        if (value_it == args.end()) {
+            return false;
+        }
+        value = *value_it;
+        args.erase(it, value_it + 1);
+        return true;
     }
     return false;
 }
@@ -241,6 +259,53 @@ void print_dry_run_sequence(uint8_t r, uint8_t g, uint8_t b) {
               << " ; write RGB direct\n";
     std::cout << "7. WORD_DATA  addr=0x40 CMD=0x00 D0=0x80 D1=0xA0 ; select register 0x80A0\n";
     std::cout << "8. BYTE_DATA  addr=0x40 CMD=0x01 D0=0x01           ; apply\n";
+}
+
+bool parse_armoury_lite_variant(const std::string& value, char& variant) {
+    if (value.size() != 1) {
+        return false;
+    }
+    char c = value[0];
+    if (c >= 'A' && c <= 'Z') {
+        c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (c != 'a' && c != 'b' && c != 'c') {
+        return false;
+    }
+    variant = c;
+    return true;
+}
+
+void print_armoury_lite_warning() {
+    std::cout << "WARNING: recover-armoury-lite is experimental.\n";
+    std::cout << "It is based on observed Armoury recovery traffic and does not change the confirmed RGB direct path.\n";
+    std::cout << "It does not use 0x8100, 0x8160, or streaming.\n\n";
+}
+
+void print_armoury_lite_dry_run(char variant, const RgbColor* color) {
+    print_armoury_lite_warning();
+    std::cout << "Dry run: no hardware writes will be performed.\n";
+    std::cout << "Variant: " << static_cast<char>(variant - 'a' + 'A') << "\n\n";
+    std::cout << "Armoury-lite sequence:\n";
+    if (variant == 'b' || variant == 'c') {
+        std::cout << "  select 0x80A0 -> write 0x01 ; initial apply\n";
+    }
+    std::cout << "  select 0x8027 -> write 0x00\n";
+    std::cout << "  select 0x8023 -> write 0x11\n";
+    std::cout << "  select 0x8020 -> write 0x01\n";
+    if (variant == 'c') {
+        std::cout << "  select 0x80F1 -> write 0x01\n";
+    }
+    std::cout << "  select 0x80A0 -> write 0x01 ; final apply\n";
+
+    if (color != nullptr) {
+        std::cout << "\nThen confirmed direct RGB sequence:\n";
+        std::cout << "  select 0x8020 -> write 0x01\n";
+        std::cout << "  select 0x80A0 -> write 0x01\n";
+        std::cout << "  select 0x8101 -> block RGB payload "
+                  << hex_byte(color->r) << ' ' << hex_byte(color->g) << ' ' << hex_byte(color->b) << "\n";
+        std::cout << "  select 0x80A0 -> write 0x01\n";
+    }
 }
 
 std::string rgb_hex(const RgbColor& color) {
@@ -886,6 +951,38 @@ int run_recover_set(const RgbColor& color, bool verbose) {
     std::cout << "ok: recovered and wrote RGB " << rgb_hex(color) << "\n";
     return kExitOk;
 }
+
+int run_recover_armoury_lite(char variant, bool dry_run, bool verbose) {
+    if (dry_run) {
+        print_armoury_lite_dry_run(variant, nullptr);
+        return kExitOk;
+    }
+
+    print_armoury_lite_warning();
+    Piix4Smbus smbus(Piix4Smbus::kDefaultBase, false, verbose);
+    AuraEne aura(smbus);
+    aura.recover_armoury_lite(variant);
+    std::cout << "ok: experimental armoury-lite recovery variant "
+              << static_cast<char>(variant - 'a' + 'A') << " completed\n";
+    return kExitOk;
+}
+
+int run_recover_armoury_lite_set(const RgbColor& color, char variant, bool dry_run, bool verbose) {
+    if (dry_run) {
+        print_armoury_lite_dry_run(variant, &color);
+        return kExitOk;
+    }
+
+    print_armoury_lite_warning();
+    Piix4Smbus smbus(Piix4Smbus::kDefaultBase, false, verbose);
+    AuraEne aura(smbus);
+    aura.recover_armoury_lite(variant);
+    aura.set_rgb(color.r, color.g, color.b);
+    std::cout << "ok: experimental armoury-lite variant "
+              << static_cast<char>(variant - 'a' + 'A')
+              << " completed and wrote RGB " << rgb_hex(color) << "\n";
+    return kExitOk;
+}
 }
 
 int main(int argc, char** argv) {
@@ -909,9 +1006,11 @@ int main(int argc, char** argv) {
         const bool strict_takeover = take_flag(args, "--strict-takeover");
         const bool execute = take_flag(args, "--execute");
         const bool include_armoury_core = take_flag(args, "--include-armoury-core");
+        std::string variant_text;
+        const bool has_variant = take_option(args, "--variant", variant_text);
 
         if (args.size() == 1 && args[0] == "doctor") {
-            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: doctor does not accept flags\n";
                 return kExitUsage;
             }
@@ -919,7 +1018,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "scenes") {
-            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: scenes does not accept flags\n";
                 return kExitUsage;
             }
@@ -928,7 +1027,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "bus-status") {
-            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: bus-status does not accept flags\n";
                 return kExitUsage;
             }
@@ -936,7 +1035,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "takeover-check") {
-            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: takeover-check does not accept flags\n";
                 return kExitUsage;
             }
@@ -944,7 +1043,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "takeover") {
-            if (force || accepted_hardware_calibration || recover_first || strict_takeover) {
+            if (force || accepted_hardware_calibration || recover_first || strict_takeover || has_variant) {
                 std::cerr << "error: takeover accepts only --dry-run, --execute, --i-accept-stopping-lighting-services, --include-armoury-core, and --verbose\n";
                 return kExitUsage;
             }
@@ -952,7 +1051,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "restore-services") {
-            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || verbose || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: restore-services does not accept flags\n";
                 return kExitUsage;
             }
@@ -960,7 +1059,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "recover") {
-            if (dry_run || force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: recover only accepts --verbose\n";
                 return kExitUsage;
             }
@@ -968,7 +1067,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 2 && args[0] == "recover-set") {
-            if (dry_run || force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (dry_run || force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: recover-set only accepts --verbose\n";
                 return kExitUsage;
             }
@@ -980,8 +1079,39 @@ int main(int argc, char** argv) {
             return run_recover_set(color, verbose);
         }
 
+        if (args.size() == 1 && args[0] == "recover-armoury-lite") {
+            if (force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+                std::cerr << "error: recover-armoury-lite accepts only --variant, --dry-run, and --verbose\n";
+                return kExitUsage;
+            }
+            char variant = 0;
+            if (!has_variant || !parse_armoury_lite_variant(variant_text, variant)) {
+                std::cerr << "error: recover-armoury-lite requires --variant a, --variant b, or --variant c\n";
+                return kExitUsage;
+            }
+            return run_recover_armoury_lite(variant, dry_run, verbose);
+        }
+
+        if (args.size() == 2 && args[0] == "recover-armoury-lite-set") {
+            if (force || accepted_hardware_calibration || accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+                std::cerr << "error: recover-armoury-lite-set accepts only --variant, --dry-run, and --verbose\n";
+                return kExitUsage;
+            }
+            char variant = 0;
+            if (!has_variant || !parse_armoury_lite_variant(variant_text, variant)) {
+                std::cerr << "error: recover-armoury-lite-set requires --variant a, --variant b, or --variant c\n";
+                return kExitUsage;
+            }
+            RgbColor color;
+            if (!parse_rgb_hex(args[1], color)) {
+                std::cerr << "error: expected color as exactly 6 hexadecimal digits, for example FF0000\n";
+                return kExitUsage;
+            }
+            return run_recover_armoury_lite_set(color, variant, dry_run, verbose);
+        }
+
         if (args.size() == 1 && args[0] == "calibrate") {
-            if (accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core) {
+            if (accepted_stopping_services || recover_first || strict_takeover || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: calibrate does not accept takeover/recovery-control flags\n";
                 return kExitUsage;
             }
@@ -989,7 +1119,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 2 && args[0] == "set") {
-            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core) {
+            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: set does not accept calibration/takeover execution flags\n";
                 return kExitUsage;
             }
@@ -1003,7 +1133,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 1 && args[0] == "off") {
-            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core) {
+            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: off does not accept calibration/takeover execution flags\n";
                 return kExitUsage;
             }
@@ -1012,7 +1142,7 @@ int main(int argc, char** argv) {
         }
 
         if (args.size() == 2 && args[0] == "scene") {
-            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core) {
+            if (accepted_hardware_calibration || accepted_stopping_services || execute || include_armoury_core || has_variant) {
                 std::cerr << "error: scene does not accept calibration/takeover execution flags\n";
                 return kExitUsage;
             }
