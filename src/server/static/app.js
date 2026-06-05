@@ -21,7 +21,6 @@ const statusText = document.getElementById("statusText");
 
 let applying = false;
 let activeAction = null;
-let statePollTimer = null;
 const sceneButtonElements = new Map();
 
 function log(payload) {
@@ -33,7 +32,16 @@ function summarizePayload(payload) {
     return payload;
   }
 
-  const copy = Array.isArray(payload) ? [...payload] : {...payload};
+  const copy = Array.isArray(payload) ? [...payload] : {
+    ok: payload.ok,
+    applied: payload.applied,
+    command: payload.command,
+    exit_code: payload.exit_code,
+    duration_ms: payload.duration_ms,
+    stdout: payload.stdout,
+    stderr: payload.stderr,
+    error: payload.error,
+  };
   for (const key of ["stdout", "stderr", "raw"]) {
     if (typeof copy[key] === "string" && copy[key].length > 1200) {
       copy[key] = `${copy[key].slice(0, 1200)}\n... truncated ...`;
@@ -50,7 +58,9 @@ function summarizePayload(payload) {
 
 function setApplying(value, label = "Applying...") {
   applying = value;
-  statusText.textContent = value ? label : "Idle";
+  if (value) {
+    statusText.textContent = label;
+  }
   setColorButton.disabled = value;
   healthButton.disabled = value;
   for (const button of sceneButtonElements.values()) {
@@ -65,34 +75,6 @@ async function requestJson(path, options = {}) {
   return payload;
 }
 
-function startStatePolling() {
-  if (statePollTimer !== null) {
-    return;
-  }
-
-  statePollTimer = window.setInterval(async () => {
-    try {
-      const state = await requestJson("/api/state");
-      if (!state.running && !state.pending) {
-        stopStatePolling();
-        activeAction = null;
-        setApplying(false);
-      } else {
-        statusText.textContent = state.pending ? "Queued..." : "Applying...";
-      }
-    } catch (error) {
-      log({ok: false, error: String(error)});
-    }
-  }, 500);
-}
-
-function stopStatePolling() {
-  if (statePollTimer !== null) {
-    window.clearInterval(statePollTimer);
-    statePollTimer = null;
-  }
-}
-
 async function runAction(actionKey, callback) {
   if (applying && activeAction === actionKey) {
     return;
@@ -105,14 +87,15 @@ async function runAction(actionKey, callback) {
   setApplying(true);
   try {
     const payload = await callback();
-    if (payload.running || payload.queued) {
-      startStatePolling();
+    if (payload.ok && payload.applied) {
+      statusText.textContent = "Applied";
     } else {
-      activeAction = null;
-      setApplying(false);
+      statusText.textContent = payload.error ? "Error" : "Not applied";
     }
   } catch (error) {
     log({ok: false, error: String(error)});
+    statusText.textContent = "Error";
+  } finally {
     activeAction = null;
     setApplying(false);
   }
@@ -159,6 +142,7 @@ healthButton.addEventListener("click", async () => {
   try {
     await requestJson("/api/health");
   } finally {
+    statusText.textContent = "Idle";
     setApplying(false);
   }
 });

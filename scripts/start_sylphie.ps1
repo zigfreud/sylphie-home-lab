@@ -3,6 +3,7 @@ param(
     [Alias("Host")]
     [string]$BindHost = "127.0.0.1",
     [switch]$NoBrowser,
+    [switch]$Restart,
     [switch]$Verbose
 )
 
@@ -50,6 +51,22 @@ function Warn-AsusProcesses {
     }
 }
 
+function Get-SavedServerProcess {
+    if (-not (Test-Path -LiteralPath $PidPath)) {
+        return $null
+    }
+    $pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
+    if (-not ($pidText -match "^\d+$")) {
+        return $null
+    }
+    return Get-Process -Id ([int]$pidText) -ErrorAction SilentlyContinue
+}
+
+if ($Restart) {
+    Write-Host "Restart requested. Stopping existing Sylphie server if present..."
+    & (Join-Path $PSScriptRoot "stop_sylphie.ps1")
+}
+
 if ($BindHost -ne "127.0.0.1") {
     Write-Warning "Binding to $BindHost exposes the API beyond localhost. 0.0.0.0 is not recommended without auth."
 }
@@ -73,11 +90,24 @@ if ($LASTEXITCODE -ne 0) {
     Fail "sylphie_rgb.exe doctor failed. Output:`n$doctorOutput"
 }
 
+$savedProcess = Get-SavedServerProcess
+if ($null -ne $savedProcess) {
+    Write-Host "Sylphie server already running from saved PID $($savedProcess.Id)."
+    Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
+    Write-Host "URL: $Url"
+    Write-Host "Exe: $ExePath"
+    Write-Host "Log: $LogPath"
+    if (-not $NoBrowser) { Start-Process $Url }
+    exit 0
+}
+
 $existingPid = Get-ListeningPid $Port
 if ($null -ne $existingPid) {
-    Write-Host "Sylphie server already appears to be listening on port $Port (pid $existingPid)."
+    Write-Host "Port $Port is already listening (pid $existingPid). Not starting another server."
     Set-Content -LiteralPath $UrlPath -Value $Url -Encoding ASCII
-    Write-Host $Url
+    Write-Host "URL: $Url"
+    Write-Host "Exe: $ExePath"
+    Write-Host "Log: $LogPath"
     if (-not $NoBrowser) { Start-Process $Url }
     exit 0
 }
@@ -110,6 +140,7 @@ if ($process.HasExited) {
 
 Write-Host "Sylphie server started. PID: $($process.Id)"
 Write-Host "URL: $Url"
+Write-Host "Exe: $ExePath"
 Write-Host "Log: $LogPath"
 
 if (-not $NoBrowser) {

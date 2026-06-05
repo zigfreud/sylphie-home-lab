@@ -41,6 +41,7 @@ try {
     $health = Invoke-RestMethod -Method Get -Uri $healthUrl -TimeoutSec 6
     Write-Host ("Health ok: {0}" -f $health.ok)
     Write-Host ("Backend: {0}" -f $health.exe)
+    Write-Host ("Backend exists: {0}" -f $health.exe_exists)
 } catch {
     Write-Host ("Health check failed: {0}" -f $_.Exception.Message)
 }

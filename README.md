@@ -112,6 +112,7 @@ Status and stop commands:
 ```powershell
 .\scripts\status_sylphie.ps1
 .\scripts\stop_sylphie.ps1
+.\scripts\start_sylphie.ps1 -Restart
 ```
 
 Startup validates `bin\sylphie_rgb.exe`, `bin\inpout32.dll`, the Python server, and `python` availability. It runs `sylphie_rgb.exe doctor` before starting the dashboard.
@@ -123,6 +124,32 @@ logs/server.log
 ```
 
 ASUS Armoury Crate, Aura, and LightingService should be closed or stopped before issuing hardware write commands. Sylphie only warns about those processes; it does not kill or stop them automatically.
+
+The API is intended for localhost use. Binding to `0.0.0.0` is not recommended until authentication is implemented.
+
+## API Reliability Test
+
+PowerShell:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/api/health
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/scene `
+  -Body '{"name":"red"}' `
+  -ContentType 'application/json'
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/scene `
+  -Body '{"name":"green"}' `
+  -ContentType 'application/json'
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/scene `
+  -Body '{"name":"blue"}' `
+  -ContentType 'application/json'
+
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/off
+```
+
+Write endpoints are deterministic: the API returns `ok: true` only after `sylphie_rgb.exe` exits with code `0`.
 
 ## Protocol Notes
 

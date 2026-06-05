@@ -9,20 +9,30 @@ import sys
 import threading
 import time
 from urllib.parse import urlparse
-import uuid
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-COMMAND_TIMEOUT_SECONDS = 5
+READ_TIMEOUT_SECONDS = 5
+WRITE_TIMEOUT_SECONDS = 8
+LOCK_WAIT_SECONDS = 2
 RGB_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 SCENE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class SylphieServer:
-    def __init__(self, exe_path):
+    def __init__(self, exe_path, host, port):
         self.exe_path = Path(exe_path)
-        self.queue = CommandQueue(self)
+        self.host = host
+        self.port = port
+        self.start_time = time.time()
+        self.hardware_lock = threading.Lock()
+        self.state_lock = threading.Lock()
+        self.current_command = None
+        self.last_command = None
+        self.last_result = None
+        self.last_rgb = None
+        self.last_scene = None
 
     def exe_exists(self):
         return self.exe_path.is_file()
@@ -30,18 +40,21 @@ class SylphieServer:
     def command_base(self):
         return [str(self.exe_path)]
 
-    def run_backend(self, args):
+    def run_backend(self, args, timeout_seconds=READ_TIMEOUT_SECONDS):
         command = self.command_base() + args
+        start = time.perf_counter()
         result = {
             "ok": False,
             "command": command,
             "stdout": "",
             "stderr": "",
             "exit_code": None,
+            "duration_ms": 0,
         }
 
         if not self.exe_exists():
             result["stderr"] = "sylphie_rgb.exe not found: " + str(self.exe_path)
+            result["error"] = result["stderr"]
             return result
 
         try:
@@ -49,135 +62,106 @@ class SylphieServer:
                 command,
                 capture_output=True,
                 text=True,
-                timeout=COMMAND_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
                 shell=False,
             )
         except subprocess.TimeoutExpired as exc:
-            result["stderr"] = "command timed out after 5 seconds"
+            result["stderr"] = "command timed out after %d seconds" % timeout_seconds
             result["stdout"] = ensure_text(exc.stdout)
             result["exit_code"] = None
+            result["error"] = result["stderr"]
+            result["duration_ms"] = elapsed_ms(start)
             return result
         except OSError as exc:
             result["stderr"] = str(exc)
+            result["error"] = result["stderr"]
+            result["duration_ms"] = elapsed_ms(start)
             return result
 
         result["stdout"] = completed.stdout
         result["stderr"] = completed.stderr
         result["exit_code"] = completed.returncode
         result["ok"] = completed.returncode == 0
+        result["duration_ms"] = elapsed_ms(start)
+        if not result["ok"]:
+            result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
         return result
 
-
-class CommandQueue:
-    def __init__(self, server_state):
-        self.server_state = server_state
-        self.condition = threading.Condition()
-        self.pending = None
-        self.running_command = None
-        self.completed = {}
-        self.last_command = None
-        self.last_result = None
-        self.last_rgb = None
-        self.last_scene = None
-        self.worker = threading.Thread(target=self.worker_loop, name="sylphie-command-worker", daemon=True)
-        self.worker.start()
-
-    def submit(self, kind, args, rgb=None, scene=None):
-        request_id = str(uuid.uuid4())
-        command = {
-            "request_id": request_id,
-            "kind": kind,
-            "args": args,
-            "rgb": rgb,
-            "scene": scene,
-            "submitted_at": time.time(),
-        }
-
-        with self.condition:
-            replaced = self.pending
-            if replaced is not None:
-                self.completed[replaced["request_id"]] = {
+    def run_hardware_command(self, args, rgb=None, scene=None):
+        command = self.command_base() + args
+        acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
+        if not acquired:
+            return (
+                409,
+                {
                     "ok": False,
-                    "queued": False,
-                    "running": self.running_command is not None,
-                    "request_id": replaced["request_id"],
-                    "command": self.server_state.command_base() + replaced["args"],
-                    "stdout": "",
-                    "stderr": "superseded by newer pending command",
+                    "error": "hardware busy",
+                    "command": command,
                     "exit_code": None,
-                }
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 0,
+                    "applied": False,
+                },
+            )
 
-            was_running = self.running_command is not None
-            self.pending = command
-            self.condition.notify_all()
+        try:
+            with self.state_lock:
+                self.current_command = command
 
-            if was_running:
-                return self.queued_response(command, running=True)
+            result = self.run_backend(args, timeout_seconds=WRITE_TIMEOUT_SECONDS)
+            result["applied"] = result["ok"] and result["exit_code"] == 0
+            if not result["ok"] and "error" not in result:
+                result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
 
-            deadline = time.time() + COMMAND_TIMEOUT_SECONDS + 1
-            while request_id not in self.completed and time.time() < deadline:
-                self.condition.wait(timeout=0.1)
-
-            if request_id in self.completed:
-                return self.completed.pop(request_id)
-
-            return self.queued_response(command, running=self.running_command is not None)
-
-    def queued_response(self, command, running):
-        return {
-            "ok": True,
-            "queued": True,
-            "running": running,
-            "request_id": command["request_id"],
-            "command": self.server_state.command_base() + command["args"],
-            "stdout": "",
-            "stderr": "",
-            "exit_code": None,
-        }
-
-    def worker_loop(self):
-        while True:
-            with self.condition:
-                while self.pending is None:
-                    self.condition.wait()
-                command = self.pending
-                self.pending = None
-                self.running_command = command
-                self.condition.notify_all()
-
-            result = self.server_state.run_backend(command["args"])
-            result["request_id"] = command["request_id"]
-            result["queued"] = False
-            result["running"] = False
-
-            with self.condition:
-                self.running_command = None
-                self.last_command = self.server_state.command_base() + command["args"]
+            with self.state_lock:
+                self.current_command = None
+                self.last_command = command
                 self.last_result = result
-                if command["rgb"] is not None:
-                    self.last_rgb = command["rgb"]
-                    self.last_scene = None
-                if command["scene"] is not None:
-                    self.last_scene = command["scene"]
-                    if command["scene"] == "off":
+                if result["applied"]:
+                    if rgb is not None:
+                        self.last_rgb = rgb
+                        self.last_scene = None
+                    if scene is not None:
+                        self.last_scene = scene
+                    if scene == "off":
                         self.last_rgb = "000000"
-                if command["kind"] == "off":
-                    self.last_rgb = "000000"
-                    self.last_scene = "off"
-                self.completed[command["request_id"]] = result
-                self.condition.notify_all()
+
+            return (200 if result["ok"] else 500, result)
+        finally:
+            with self.state_lock:
+                if self.current_command == command:
+                    self.current_command = None
+            self.hardware_lock.release()
 
     def state(self):
-        with self.condition:
+        with self.state_lock:
             return {
                 "ok": True,
-                "running": self.running_command is not None,
-                "pending": self.pending is not None,
+                "running": self.current_command is not None,
+                "current_command": command_to_text(self.current_command),
                 "last_command": command_to_text(self.last_command),
                 "last_result": self.last_result,
                 "last_rgb": self.last_rgb,
                 "last_scene": self.last_scene,
+                "server_pid": os.getpid(),
+                "exe": str(self.exe_path),
             }
+
+    def debug_config(self, static_dir):
+        state = self.state()
+        return {
+            "ok": True,
+            "host": self.host,
+            "port": self.port,
+            "exe": str(self.exe_path),
+            "static_dir": str(static_dir),
+            "working_directory": os.getcwd(),
+            "server_pid": os.getpid(),
+            "python_version": sys.version,
+            "running": state["running"],
+            "current_command": state["current_command"],
+        }
 
 
 def command_to_text(command):
@@ -192,6 +176,38 @@ def ensure_text(value):
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def elapsed_ms(start):
+    return int((time.perf_counter() - start) * 1000)
+
+
+def file_mtime(path):
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
+def detect_asus_processes(doctor_output):
+    if "no common ASUS/Aura lighting processes detected" in doctor_output:
+        return []
+
+    names = [
+        "LightingService",
+        "ArmouryCrate",
+        "ArmourySocketServer",
+        "ArmourySwAgent",
+        "asus_framework",
+        "Aura",
+    ]
+    found = []
+    for line in doctor_output.splitlines():
+        for name in names:
+            if name.lower() in line.lower() and ("pid=" in line.lower() or "rule=" in line.lower()):
+                found.append(name)
+    found = sorted(set(found))
+    return found
 
 
 def resolve_exe_path(value):
@@ -303,12 +319,18 @@ def make_handler(server_state):
             path = urlparse(self.path).path
             if path == "/api/health":
                 doctor = server_state.run_backend(["doctor"])
+                doctor_output = (doctor.get("stdout") or "") + "\n" + (doctor.get("stderr") or "")
                 self.send_json(
                     200,
                     {
                         "ok": server_state.exe_exists() and doctor["ok"],
+                        "server_pid": os.getpid(),
+                        "server_start_time": server_state.start_time,
                         "exe": str(server_state.exe_path),
+                        "exe_exists": server_state.exe_exists(),
+                        "exe_modified_time": file_mtime(server_state.exe_path),
                         "doctor": doctor,
+                        "asus_processes": detect_asus_processes(doctor_output),
                     },
                 )
                 return
@@ -327,7 +349,11 @@ def make_handler(server_state):
                 return
 
             if path == "/api/state":
-                self.send_json(200, server_state.queue.state())
+                self.send_json(200, server_state.state())
+                return
+
+            if path == "/api/debug/config":
+                self.send_json(200, server_state.debug_config(static_dir))
                 return
 
             if path == "/" or path.startswith("/static/"):
@@ -347,12 +373,12 @@ def make_handler(server_state):
             try:
                 if path == "/api/set":
                     rgb = normalize_rgb(body.get("rgb"))
-                    result = server_state.queue.submit("set", ["set", rgb], rgb=rgb)
+                    status, result = server_state.run_hardware_command(["set", rgb], rgb=rgb)
                 elif path == "/api/scene":
                     name = validate_scene_name(body.get("name"))
-                    result = server_state.queue.submit("scene", ["scene", name], scene=name)
+                    status, result = server_state.run_hardware_command(["scene", name], scene=name)
                 elif path == "/api/off":
-                    result = server_state.queue.submit("off", ["off"], rgb="000000", scene="off")
+                    status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off")
                 else:
                     self.send_json(404, {"ok": False, "error": "not found"})
                     return
@@ -360,7 +386,7 @@ def make_handler(server_state):
                 self.send_json(400, {"ok": False, "error": str(exc)})
                 return
 
-            self.send_json(200 if result["ok"] else 500, result)
+            self.send_json(status, result)
 
     return Handler
 
@@ -376,7 +402,7 @@ def parse_args():
 def main():
     args = parse_args()
     exe_path = resolve_exe_path(args.exe)
-    server_state = SylphieServer(exe_path)
+    server_state = SylphieServer(exe_path, args.host, args.port)
 
     if args.host != DEFAULT_HOST:
         print("WARNING: binding to non-localhost host %s" % args.host)
