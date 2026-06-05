@@ -8,7 +8,13 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from urllib.parse import urlparse
+
+try:
+    from agent_client import send_agent_command
+except ImportError:
+    send_agent_command = None
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -21,10 +27,11 @@ SCENE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class SylphieServer:
-    def __init__(self, exe_path, host, port):
+    def __init__(self, exe_path, host, port, use_agent=False):
         self.exe_path = Path(exe_path)
         self.host = host
         self.port = port
+        self.use_agent = use_agent
         self.start_time = time.time()
         self.hardware_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -41,6 +48,11 @@ class SylphieServer:
         return [str(self.exe_path)]
 
     def run_backend(self, args, timeout_seconds=READ_TIMEOUT_SECONDS):
+        if self.use_agent:
+            agent_result = self.run_agent_backend(args, timeout_seconds=timeout_seconds)
+            if agent_result is not None:
+                return agent_result
+
         command = self.command_base() + args
         start = time.perf_counter()
         result = {
@@ -85,6 +97,51 @@ class SylphieServer:
         result["duration_ms"] = elapsed_ms(start)
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
+        return result
+
+    def run_agent_backend(self, args, timeout_seconds=READ_TIMEOUT_SECONDS):
+        if send_agent_command is None:
+            return {
+                "ok": False,
+                "command": ["agent"] + args,
+                "stdout": "",
+                "stderr": "agent_client.py could not be imported",
+                "exit_code": 1,
+                "duration_ms": 0,
+                "error": "agent_client.py could not be imported",
+            }
+
+        payload = cli_args_to_agent_payload(args)
+        if payload is None:
+            return None
+
+        start = time.perf_counter()
+        command = ["agent"] + args
+        result = {
+            "ok": False,
+            "command": command,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
+            "duration_ms": 0,
+        }
+
+        try:
+            response = send_agent_command(payload, timeout=timeout_seconds)
+        except Exception as exc:
+            result["stderr"] = str(exc)
+            result["error"] = result["stderr"]
+            result["exit_code"] = 1
+            result["duration_ms"] = elapsed_ms(start)
+            return result
+
+        result["ok"] = bool(response.get("ok"))
+        result["stdout"] = json.dumps(response, indent=2)
+        result["stderr"] = "" if result["ok"] else str(response.get("error") or "")
+        result["exit_code"] = 0 if result["ok"] else 1
+        result["duration_ms"] = elapsed_ms(start)
+        if not result["ok"]:
+            result["error"] = response.get("error") or "agent command failed"
         return result
 
     def takeover_check(self):
@@ -194,6 +251,7 @@ class SylphieServer:
             "host": self.host,
             "port": self.port,
             "exe": str(self.exe_path),
+            "use_agent": self.use_agent,
             "static_dir": str(static_dir),
             "working_directory": os.getcwd(),
             "server_pid": os.getpid(),
@@ -219,6 +277,42 @@ def ensure_text(value):
 
 def elapsed_ms(start):
     return int((time.perf_counter() - start) * 1000)
+
+
+def cli_args_to_agent_payload(args):
+    if not args:
+        return None
+
+    payload = {"id": str(uuid.uuid4())}
+    command = args[0]
+    if command in ("doctor", "off", "recover"):
+        if len(args) != 1:
+            return None
+        payload["cmd"] = command
+        return payload
+    if command == "takeover-check":
+        if len(args) != 1:
+            return None
+        payload["cmd"] = "takeover_check"
+        return payload
+    if command == "bus-status":
+        if len(args) != 1:
+            return None
+        payload["cmd"] = "bus_status"
+        return payload
+    if command == "set" and len(args) == 2:
+        payload["cmd"] = "set"
+        payload["rgb"] = args[1]
+        return payload
+    if command == "scene" and len(args) == 2:
+        payload["cmd"] = "scene"
+        payload["name"] = args[1]
+        return payload
+    if command == "recover-set" and len(args) == 2:
+        payload["cmd"] = "recover_set"
+        payload["rgb"] = args[1]
+        return payload
+    return None
 
 
 def file_mtime(path):
@@ -379,6 +473,7 @@ def make_handler(server_state):
                         "server_pid": os.getpid(),
                         "server_start_time": server_state.start_time,
                         "exe": str(server_state.exe_path),
+                        "use_agent": server_state.use_agent,
                         "exe_exists": server_state.exe_exists(),
                         "exe_modified_time": file_mtime(server_state.exe_path),
                         "doctor": doctor,
@@ -467,7 +562,8 @@ def parse_args():
 def main():
     args = parse_args()
     exe_path = resolve_exe_path(args.exe)
-    server_state = SylphieServer(exe_path, args.host, args.port)
+    use_agent = os.environ.get("SYLPHIE_USE_AGENT") == "1"
+    server_state = SylphieServer(exe_path, args.host, args.port, use_agent=use_agent)
 
     if args.host != DEFAULT_HOST:
         print("WARNING: binding to non-localhost host %s" % args.host)
@@ -476,6 +572,8 @@ def main():
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print("Sylphie server listening on http://%s:%d" % (args.host, args.port))
     print("Using sylphie_rgb.exe: %s" % exe_path)
+    if use_agent:
+        print("Using Sylphie hardware agent via named pipe")
     httpd.serve_forever()
 
 

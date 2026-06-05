@@ -120,6 +120,41 @@ If the color stops responding after switching between Sylphie and ASUS tools:
 
 The recovery command only toggles the confirmed direct-mode path and writes direct RGB `000000`; it does not touch `0x8160`, streaming, or experimental registers.
 
+## Hardware Agent
+
+`sylphie_agent.exe` is the persistent elevated hardware owner prototype. It listens on the local named pipe `\\.\pipe\sylphie-hw`, serializes hardware writes, and calls the native SMBus/Aura layer directly. The HTTP server should remain non-elevated; it can use the agent through `SYLPHIE_USE_AGENT=1` in a future/experimental run.
+
+Build:
+
+```bat
+src\native\sylphie_agent\build.bat
+```
+
+Manual agent test:
+
+```bat
+bin\sylphie_agent.exe --pipe \\.\pipe\sylphie-hw
+bin\sylphie_agent.exe --client ping
+bin\sylphie_agent.exe --client status
+```
+
+Scheduled Task setup:
+
+```powershell
+.\scripts\install_agent_task.ps1
+.\scripts\start_agent.ps1
+.\scripts\status_agent.ps1
+.\scripts\stop_agent.ps1
+```
+
+The task is named `SylphieAgent`, starts at user logon, and runs with highest privileges. The agent writes logs to:
+
+```text
+logs/agent.log
+```
+
+Do not run Armoury, Aura, OpenRGB, or `LightingService` at the same time as the agent. The agent refuses write commands when known controller conflicts are detected unless it was started with the debug-only `--allow-conflicts` flag.
+
 ## Starting Sylphie
 
 From the project root:
