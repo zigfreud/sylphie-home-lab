@@ -1,0 +1,42 @@
+# Build outputs
+bin/
+build/
+out/
+Release/
+Debug/
+x64/
+x86/
+
+# Executables / binary artifacts
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+*.exp
+*.ilk
+
+# Logs and captures
+*.log
+logs/
+research/logs/
+captures/
+dumps/
+*.txt
+*.nfo
+data/
+
+# Local reverse-engineering scratch
+tests/test_openrgb.py
+
+# Local/editor
+.vs/
+.vscode/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# OS
+Thumbs.db
+Desktop.ini
