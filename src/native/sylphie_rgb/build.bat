@@ -12,7 +12,8 @@ cl /nologo /std:c++17 /EHsc /W4 /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
   "%SCRIPT_DIR%main.cpp" ^
   "%SCRIPT_DIR%piix4_smbus.cpp" ^
   "%SCRIPT_DIR%aura_ene.cpp" ^
-  "%SCRIPT_DIR%process_check.cpp"
+  "%SCRIPT_DIR%process_check.cpp" ^
+  Advapi32.lib
 
 if errorlevel 1 exit /b 1
 

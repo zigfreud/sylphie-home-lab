@@ -158,6 +158,7 @@ class SylphieServer:
                 {
                     "ok": False,
                     "error": "controller conflict detected",
+                    "suggestion": "Run takeover first",
                     "details": takeover,
                     "applied": False,
                 },
@@ -539,6 +540,25 @@ def make_handler(server_state):
                 elif path == "/api/recover-set":
                     rgb = normalize_rgb(body.get("rgb"))
                     status, result = server_state.run_hardware_command(["recover-set", rgb], rgb=rgb, check_takeover=False)
+                elif path == "/api/takeover-check":
+                    result = server_state.run_backend(["takeover-check"], timeout_seconds=READ_TIMEOUT_SECONDS)
+                    status = 200 if result["ok"] or result["exit_code"] in (10, 11) else 500
+                elif path == "/api/takeover":
+                    execute = bool(body.get("execute", False))
+                    include_core = bool(body.get("include_armoury_core", False))
+                    accepted = bool(body.get("accept", False))
+                    args = ["takeover"]
+                    if execute:
+                        args.append("--execute")
+                        if accepted:
+                            args.append("--i-accept-stopping-lighting-services")
+                    else:
+                        args.append("--dry-run")
+                    if include_core:
+                        args.append("--include-armoury-core")
+                    status, result = server_state.run_hardware_command(args, check_takeover=False)
+                elif path == "/api/restore-services":
+                    status, result = server_state.run_hardware_command(["restore-services"], check_takeover=False)
                 else:
                     self.send_json(404, {"ok": False, "error": "not found"})
                     return

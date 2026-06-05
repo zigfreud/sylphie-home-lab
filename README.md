@@ -27,6 +27,9 @@ sylphie_rgb.exe scene off
 sylphie_rgb.exe calibrate --dry-run
 sylphie_rgb.exe bus-status
 sylphie_rgb.exe takeover-check
+sylphie_rgb.exe takeover --dry-run
+sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services
+sylphie_rgb.exe restore-services
 sylphie_rgb.exe recover
 sylphie_rgb.exe recover-set FF0000
 ```
@@ -119,6 +122,44 @@ If the color stops responding after switching between Sylphie and ASUS tools:
 7. Use a full power drain only if software recovery and ownership cleanup do not restore control.
 
 The recovery command only toggles the confirmed direct-mode path and writes direct RGB `000000`; it does not touch `0x8160`, streaming, or experimental registers.
+
+## Taking Ownership From Armoury/Aura
+
+Takeover is an explicit, reversible operation for cases where ASUS/Aura/OpenRGB processes keep reclaiming the RGB controller.
+
+Read-only check:
+
+```bat
+sylphie_rgb.exe takeover-check
+```
+
+Preview what Sylphie would stop:
+
+```bat
+sylphie_rgb.exe takeover --dry-run
+```
+
+Execute the safe Tier 1 takeover:
+
+```bat
+sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services
+```
+
+Include Armoury core helper components, except `AsusCertService`:
+
+```bat
+sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services --include-armoury-core
+```
+
+Restore services stopped by Sylphie:
+
+```bat
+sylphie_rgb.exe restore-services
+```
+
+Takeover only stops whitelisted services/processes. It does not uninstall software, delete services, change `StartupType`, or disable services permanently. Sylphie saves `.sylphie/takeover_state.json` and `restore-services` only attempts to restart services recorded there. It does not recreate standalone processes.
+
+Armoury/Aura may stop controlling RGB until `restore-services` runs or the machine reboots. The dashboard exposes takeover as explicit buttons; it never runs takeover automatically.
 
 ## Hardware Agent
 

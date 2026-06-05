@@ -34,6 +34,10 @@ const healthButton = document.getElementById("healthButton");
 const statusText = document.getElementById("statusText");
 const recoverButton = document.getElementById("recoverButton");
 const recoverLastButton = document.getElementById("recoverLastButton");
+const takeoverCheckButton = document.getElementById("takeoverCheckButton");
+const takeoverDryRunButton = document.getElementById("takeoverDryRunButton");
+const takeoverExecuteButton = document.getElementById("takeoverExecuteButton");
+const restoreServicesButton = document.getElementById("restoreServicesButton");
 const conflictAlert = document.getElementById("conflictAlert");
 
 let applying = false;
@@ -84,6 +88,10 @@ function setApplying(value, label = "Applying...") {
   healthButton.disabled = value;
   recoverButton.disabled = value;
   recoverLastButton.disabled = value;
+  takeoverCheckButton.disabled = value;
+  takeoverDryRunButton.disabled = value;
+  takeoverExecuteButton.disabled = value;
+  restoreServicesButton.disabled = value;
   for (const button of sceneButtonElements.values()) {
     button.disabled = value;
   }
@@ -99,7 +107,7 @@ function updateConflictAlert(payload) {
 
   if (payload && payload.error === "controller conflict detected") {
     conflictAlert.hidden = false;
-    conflictAlert.textContent = "Controller conflict detected. Run Health for details and close Armoury/Aura/OpenRGB before writing.";
+    conflictAlert.textContent = payload.suggestion || "Controller conflict detected. Run takeover first or close Armoury/Aura/OpenRGB before writing.";
     return;
   }
 
@@ -188,6 +196,42 @@ async function recoverLastColor() {
   });
 }
 
+async function takeoverCheck() {
+  await runAction("takeover-check", () => {
+    return requestJson("/api/takeover-check", {method: "POST"});
+  });
+}
+
+async function takeoverDryRun() {
+  await runAction("takeover-dry-run", () => {
+    return requestJson("/api/takeover", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({execute: false}),
+    });
+  });
+}
+
+async function takeoverExecute() {
+  const accepted = window.confirm("Sylphie will stop whitelisted lighting services/processes and run recovery. Continue?");
+  if (!accepted) {
+    return;
+  }
+  await runAction("takeover-execute", () => {
+    return requestJson("/api/takeover", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({execute: true, accept: true}),
+    });
+  });
+}
+
+async function restoreServices() {
+  await runAction("restore-services", () => {
+    return requestJson("/api/restore-services", {method: "POST"});
+  });
+}
+
 function buildSceneButtons() {
   for (const scene of scenes) {
     const button = document.createElement("button");
@@ -211,4 +255,8 @@ healthButton.addEventListener("click", async () => {
 setColorButton.addEventListener("click", setColor);
 recoverButton.addEventListener("click", recoverController);
 recoverLastButton.addEventListener("click", recoverLastColor);
+takeoverCheckButton.addEventListener("click", takeoverCheck);
+takeoverDryRunButton.addEventListener("click", takeoverDryRun);
+takeoverExecuteButton.addEventListener("click", takeoverExecute);
+restoreServicesButton.addEventListener("click", restoreServices);
 buildSceneButtons();

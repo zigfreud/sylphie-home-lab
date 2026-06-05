@@ -112,6 +112,13 @@ p {
   margin-bottom: 16px;
 }
 
+.takeover-control {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 .conflict-alert {
   margin-bottom: 16px;
   padding: 10px 12px;
@@ -156,6 +163,7 @@ pre {
   .topbar,
   .color-control,
   .recovery-control,
+  .takeover-control,
   .status-actions {
     align-items: stretch;
     flex-direction: column;
