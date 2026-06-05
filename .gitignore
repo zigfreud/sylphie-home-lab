@@ -37,6 +37,10 @@ tests/test_openrgb.py
 *.VC.db
 *.VC.VC.opendb
 
+# Python
+__pycache__/
+*.pyc
+
 # OS
 Thumbs.db
 Desktop.ini

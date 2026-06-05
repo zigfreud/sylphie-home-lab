@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sylphie Home Lab</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Sylphie Home Lab</h1>
+          <p>Local RGB control for the ASUS Aura/ENE 12V header.</p>
+        </div>
+        <button id="healthButton" type="button">Health</button>
+      </header>
+
+      <section class="controls">
+        <div class="color-control">
+          <input id="colorInput" type="color" value="#ff0000" aria-label="RGB color">
+          <button id="setColorButton" type="button">Set color</button>
+        </div>
+
+        <div id="sceneButtons" class="scene-grid" aria-label="Scenes"></div>
+      </section>
+
+      <section class="log-panel">
+        <h2>Log</h2>
+        <pre id="logOutput"></pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

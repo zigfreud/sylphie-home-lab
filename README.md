@@ -69,6 +69,30 @@ The executable is written to `bin\sylphie_rgb.exe`.
 
 `inpout32.dll` is required next to the executable but is not committed to the repository.
 
+## Local API / Dashboard
+
+The local dashboard wraps `sylphie_rgb.exe` through a small Python standard-library HTTP server. It binds to `127.0.0.1` by default.
+
+```bat
+python src/server/sylphie_server.py --host 127.0.0.1 --port 8765 --exe bin/sylphie_rgb.exe
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+PowerShell examples:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/scene -Body '{"name":"movie"}' -ContentType 'application/json'
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/set -Body '{"rgb":"FF0000"}' -ContentType 'application/json'
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/off
+```
+
+The server never accepts arbitrary shell commands and calls the backend with `shell=False`.
+
 ## Protocol Notes
 
 The confirmed protocol for the current MVP is documented in `docs/protocol/asus-prime-b450m-aura-smbus.md`.
