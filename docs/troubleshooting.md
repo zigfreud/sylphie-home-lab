@@ -161,6 +161,31 @@ tools\probes\build_armoury_ui_capture.bat
 src\native\sylphie_piix4_broad_capture\build.bat
 ```
 
+## Full Armoury Cold-Start Capture
+
+Use this when a simple `LightingService` restart does not recreate a clean Armoury/Aura initialization.
+
+From an elevated PowerShell:
+
+```powershell
+.\scripts\capture_armoury_cold_start.ps1 -Mode gui-cold-launch
+```
+
+The script:
+
+- starts the read-only Armoury UI probe with `--capture-block-payload`;
+- stops Sylphie server/agent;
+- stops `LightingService` first;
+- waits for `LightingService` to stop;
+- kills only whitelisted Armoury/Aura/OpenRGB leftover processes;
+- never stops `AsusCertService` by default;
+- does not change service startup type;
+- does not delete services;
+- writes raw logs to `research/captures/`;
+- writes a sanitized summary to `docs/research/`.
+
+The Control Center can launch this flow from Capture Lab, but it opens a separate elevated PowerShell window and the dashboard may disconnect because the script stops the Sylphie server.
+
 ## When To Use Takeover
 
 Use takeover when:

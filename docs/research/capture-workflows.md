@@ -27,6 +27,43 @@ Use the Control Center `Capture Lab` tab when possible. It starts probes with fi
 7. Apply red/white from Armoury and mark the color.
 8. Stop capture.
 
+## Full Armoury Cold-Start Workflow
+
+Use this workflow to capture the rearm sequence that may include `0x8000` block writes.
+
+Preferred command:
+
+```powershell
+.\scripts\capture_armoury_cold_start.ps1 -Mode gui-cold-launch
+```
+
+Alternative service-only mode:
+
+```powershell
+.\scripts\capture_armoury_cold_start.ps1 -Mode service-only
+```
+
+The script starts capture before stopping the Armoury/Aura stack. It stops `LightingService` first, waits for it to stop, kills only whitelisted leftover processes, and then launches Armoury or starts `LightingService`. Raw captures stay in `research/captures/`; the script writes a sanitized summary to `docs/research/`.
+
+Markers to produce during the flow:
+
+- `STACK_STOP_BEGIN`
+- `SERVICE_STOPPED`
+- `STACK_STOPPED`
+- `ARMOURY_LAUNCHED` or `SERVICE_STARTED`
+- `UAC_ACCEPTED_BY_USER` when applicable
+- `FIRST_LIGHT`
+- `WHITE_SELECTED`
+- `RED_SELECTED`
+
+Inspect the summary for:
+
+- reads `CMD=0x81` / `CMD=0x90`;
+- `select_register 0x8000`;
+- `block_write last_selected_register=0x8000 len=3`;
+- payload reads from that block write;
+- writes around `0x8000`, `0x80A0`, `0x80F1`, `0x8023`, and `0x8022`.
+
 ## Static Color Workflow
 
 1. Start `Armoury UI capture`.

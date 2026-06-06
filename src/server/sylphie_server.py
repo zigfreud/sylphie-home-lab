@@ -422,6 +422,67 @@ class SylphieServer:
             self.log_command({"kind": "capture-start", "result": payload})
             return 200, payload
 
+    def start_cold_start_capture(self, mode):
+        if mode not in ("gui-cold-launch", "service-only"):
+            return 400, {"ok": False, "error": "mode must be gui-cold-launch or service-only"}
+
+        script = (self.project_root / "scripts" / "capture_armoury_cold_start.ps1").resolve()
+        if not script.is_file():
+            return 500, {"ok": False, "error": "cold-start capture script not found", "script": str(script)}
+
+        script_args = [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-Mode",
+            mode,
+        ]
+        argument_list = " ".join(powershell_quote_arg(arg) for arg in script_args)
+        command = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Start-Process",
+            "powershell",
+            "-Verb",
+            "RunAs",
+            "-WorkingDirectory",
+            str(self.project_root),
+            "-ArgumentList",
+            argument_list,
+        ]
+        start = time.perf_counter()
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=8, shell=False)
+        except subprocess.TimeoutExpired as exc:
+            return 500, {
+                "ok": False,
+                "error": "timed out while launching elevated cold-start capture",
+                "stdout": ensure_text(exc.stdout),
+                "stderr": ensure_text(exc.stderr),
+                "command": command,
+            }
+        except OSError as exc:
+            return 500, {"ok": False, "error": str(exc), "command": command}
+
+        result = {
+            "ok": completed.returncode == 0,
+            "command": command,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "exit_code": completed.returncode,
+            "duration_ms": elapsed_ms(start),
+            "message": "Elevated cold-start capture window requested. The dashboard/server may stop during the workflow.",
+        }
+        if not result["ok"]:
+            result["error"] = result["stderr"] or result["stdout"] or "failed to launch elevated cold-start capture"
+        self.log_command({"kind": "capture-cold-start", "result": summarize_for_log(result)})
+        return (200 if result["ok"] else 500), result
+
     def capture_marker(self, marker):
         marker = marker.strip().upper()
         if not MARKER_RE.match(marker):
@@ -495,6 +556,10 @@ def append_line(path, text):
     ensure_dir(Path(path).parent)
     with Path(path).open("a", encoding="utf-8") as handle:
         handle.write(text + "\n")
+
+
+def powershell_quote_arg(value):
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def summarize_for_log(result):
@@ -848,6 +913,8 @@ def make_handler(server_state):
                 elif path == "/api/capture/start":
                     capture_type = body.get("type")
                     status, result = server_state.start_capture(capture_type, capture_block_payload=bool(body.get("capture_block_payload", True)))
+                elif path == "/api/capture/cold-start":
+                    status, result = server_state.start_cold_start_capture(str(body.get("mode", "gui-cold-launch")))
                 elif path == "/api/capture/marker":
                     status, result = server_state.capture_marker(str(body.get("marker", "")))
                 elif path == "/api/capture/stop":

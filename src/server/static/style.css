@@ -24,7 +24,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -49,6 +50,15 @@ button:disabled {
 
 button.danger {
   border-color: rgba(255, 107, 107, 0.75);
+}
+
+select {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 10px;
 }
 
 .app-shell {

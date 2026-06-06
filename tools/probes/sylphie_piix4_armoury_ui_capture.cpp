@@ -42,6 +42,7 @@ struct Options {
     bool segment_logs = false;
     bool decode = true;
     uint32_t interval_ms = 1;
+    uint32_t duration_seconds = 0;
 };
 
 struct Snapshot {
@@ -178,6 +179,7 @@ void print_help() {
         << "  --payload-max-len N        Max block length to capture, default 16\n"
         << "  --segment-logs             Start a segment log on each marker key\n"
         << "  --no-decode                Disable Aura event decoder\n"
+        << "  --duration-seconds N       Stop automatically after N seconds\n"
         << "  --help                     Show this help\n\n"
         << "Marker keys:\n"
         << "  1 SERVICE_STOPPED\n"
@@ -240,6 +242,10 @@ Options parse_args(int argc, char** argv) {
             if (options.interval_ms == 0) {
                 options.interval_ms = 1;
             }
+            continue;
+        }
+        if (arg == "--duration-seconds" && i + 1 < argc) {
+            options.duration_seconds = static_cast<uint32_t>(std::stoul(argv[++i]));
             continue;
         }
         if (!arg.empty() && arg[0] != '-' && !consumed_positional_base) {
@@ -651,6 +657,7 @@ int main(int argc, char** argv) {
         log.write("payload_max_len=" + std::to_string(static_cast<int>(options.payload_max_len)));
         log.write(std::string("segment_logs=") + (options.segment_logs ? "true" : "false"));
         log.write(std::string("decode=") + (options.decode ? "true" : "false"));
+        log.write("duration_seconds=" + std::to_string(options.duration_seconds));
         if (options.capture_block_payload) {
             log.write("WARNING: --capture-block-payload reads +0x07 only for ADDR=0x40 W CMD=0x03 D0=1..payload_max_len; this is experimental/invasive.");
         }
@@ -663,7 +670,14 @@ int main(int argc, char** argv) {
         log.write(raw_line(previous, GetTickCount64(), {"initial"}));
 
         bool quit = false;
+        const uint64_t deadline_tick =
+            options.duration_seconds == 0 ? 0 : GetTickCount64() + (static_cast<uint64_t>(options.duration_seconds) * 1000);
         while (!quit) {
+            if (deadline_tick != 0 && GetTickCount64() >= deadline_tick) {
+                log.write(timestamp_now() + " MARKER AUTO_DURATION_STOP");
+                break;
+            }
+
             while (_kbhit()) {
                 const int key = _getch();
                 if (key == 'q' || key == 'Q') {

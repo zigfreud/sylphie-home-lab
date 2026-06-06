@@ -85,6 +85,11 @@
         <div class="toolbar">
           <button data-action="startBroadCapture" type="button">Start broad capture</button>
           <button data-action="startArmouryCapture" type="button">Start Armoury UI capture</button>
+          <select id="coldStartMode" aria-label="Cold-start capture mode">
+            <option value="gui-cold-launch">gui-cold-launch</option>
+            <option value="service-only">service-only</option>
+          </select>
+          <button data-action="startColdStartCapture" type="button">Full Armoury Cold-Start Capture</button>
           <button data-action="stopCapture" type="button">Stop capture</button>
           <button data-action="captureStatus" type="button">Status</button>
         </div>

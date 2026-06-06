@@ -28,6 +28,7 @@ dumps/
 data/
 .sylphie/
 *_capture_master.log
+*_master.log
 *_segment_*.log
 commands.jsonl
 

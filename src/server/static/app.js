@@ -15,6 +15,9 @@ const sceneRgb = {
 const markers = [
   "SERVICE_STOPPED",
   "SERVICE_STARTED",
+  "STACK_STOPPED",
+  "ARMOURY_LAUNCHED",
+  "UAC_ACCEPTED_BY_USER",
   "FIRST_LIGHT",
   "MOUSE_COLOR_SELECTED",
   "OK_CLICKED",
@@ -29,6 +32,7 @@ const markers = [
 const statusText = document.getElementById("statusText");
 const colorInput = document.getElementById("colorInput");
 const lastRgb = document.getElementById("lastRgb");
+const coldStartMode = document.getElementById("coldStartMode");
 const conflictAlert = document.getElementById("conflictAlert");
 const results = {
   lights: document.getElementById("lightsResult"),
@@ -259,6 +263,12 @@ const actions = {
   experimentalClearMode: () => run("recovery", "Experimental command unavailable...", async () => ({ok: false, error: "Not wired yet. Use CLI experimental command manually for now."})),
   startBroadCapture: () => run("capture", "Starting broad capture...", () => post("/api/capture/start", {type: "broad", capture_block_payload: true})),
   startArmouryCapture: () => run("capture", "Starting Armoury UI capture...", () => post("/api/capture/start", {type: "armoury-ui", capture_block_payload: true})),
+  startColdStartCapture: () => {
+    const accepted = window.confirm("This launches an elevated cold-start capture and may stop the Sylphie server/dashboard. Continue?");
+    if (!accepted) return;
+    const mode = coldStartMode ? coldStartMode.value : "gui-cold-launch";
+    return run("capture", "Launching cold-start capture...", () => post("/api/capture/cold-start", {mode}));
+  },
   stopCapture: () => run("capture", "Stopping capture...", () => post("/api/capture/stop")),
   captureStatus: () => run("capture", "Loading capture status...", () => request("/api/capture/status")),
   tailServerLog: () => run("logs", "Loading server log...", () => request("/api/logs/tail?name=server&lines=200")),

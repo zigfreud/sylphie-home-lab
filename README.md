@@ -140,7 +140,7 @@ The Control Center has these tabs:
 - `Agent`: ping/status plus start, stop, and restart actions for the Scheduled Task agent.
 - `Armoury Takeover`: service/process status, takeover dry-run, explicit takeover execute, and restore services.
 - `Recovery`: bus-status, recover, recover-set white/red/last color, and placeholders for experimental recovery flows.
-- `Capture Lab`: start broad capture, start Armoury UI capture, stop capture, sidecar markers, and capture log tail.
+- `Capture Lab`: start broad capture, start Armoury UI capture, launch full Armoury cold-start capture, stop capture, sidecar markers, and capture log tail.
 - `Logs`: safe tail views for `logs/server.log`, `logs/agent.log`, `logs/commands.jsonl`, and the current capture log.
 
 The HTTP server is not elevated. Privileged hardware and ownership operations go through `sylphie_agent.exe` over the local named pipe. If the agent is not running, the UI shows agent errors and the user should run:
@@ -152,6 +152,8 @@ The HTTP server is not elevated. Privileged hardware and ownership operations go
 The server exposes only fixed endpoints and whitelisted scripts. It does not accept arbitrary commands, paths, or shell input. For debug-only CLI fallback, start the server with `SYLPHIE_USE_AGENT=0`.
 
 Capture Lab starts only whitelisted local probe executables from `bin\`. Markers are written through the dashboard into a sidecar marker log under `research/captures/`, so capture workflows do not require typing probe commands by hand.
+
+Full Armoury cold-start capture is different: it intentionally stops the Sylphie server/agent, stops `LightingService` first, kills only whitelisted leftover Armoury/Aura/OpenRGB processes, launches Armoury or starts `LightingService`, and writes a sanitized summary under `docs/research/`. Because it must stop services, it runs in a separate elevated PowerShell window and the dashboard may disconnect during the workflow.
 
 ## Controller Ownership and Recovery
 
