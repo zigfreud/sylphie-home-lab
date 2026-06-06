@@ -29,6 +29,7 @@ data/
 .sylphie/
 *_capture_master.log
 *_segment_*.log
+commands.jsonl
 
 # Local reverse-engineering scratch
 tests/test_openrgb.py

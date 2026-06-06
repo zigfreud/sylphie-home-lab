@@ -2,9 +2,15 @@
 
 Native Windows CLI backend for controlling ASUS Aura/ENE RGB header on ASUS PRIME B450M-GAMING/BR.
 
+## Status
+
+Experimental home-lab software. The hardware protocol is validated on the tested motherboard, but the controller ownership, recovery, and capture tooling are still evolving.
+
 ## Safety
 
 This project uses low-level SMBus and I/O port access. Use at your own risk. Do not run hardware write commands while ASUS Armoury Crate, Aura, LightingService, or another RGB controller is using the same SMBus device.
+
+OpenRGB/OpenAuraSDK were used as research references only. No GPL source code is vendored or copied into this repository.
 
 ## Tested Hardware
 
