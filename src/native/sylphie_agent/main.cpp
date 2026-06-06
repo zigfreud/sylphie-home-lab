@@ -75,6 +75,10 @@ void print_help() {
         << "  sylphie_agent.exe --client status\n"
         << "  sylphie_agent.exe --client bus-status\n"
         << "  sylphie_agent.exe --client takeover-check\n"
+        << "  sylphie_agent.exe --client service-status\n"
+        << "  sylphie_agent.exe --client takeover-dry-run\n"
+        << "  sylphie_agent.exe --client takeover-execute --i-accept-stopping-lighting-services\n"
+        << "  sylphie_agent.exe --client restore-services\n"
         << "  sylphie_agent.exe --client set FF0000\n"
         << "  sylphie_agent.exe --client scene movie\n"
         << "  sylphie_agent.exe --client off\n"
@@ -104,6 +108,48 @@ std::string build_client_request(const std::vector<std::string>& args) {
     }
     if (command == "takeover-check") {
         return make_request_json(id, "takeover_check");
+    }
+    if (command == "service-status") {
+        return make_request_json(id, "service_status");
+    }
+    if (command == "takeover-dry-run") {
+        bool include_core = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--include-armoury-core") {
+                include_core = true;
+            } else {
+                throw std::runtime_error("invalid takeover-dry-run flag: " + args[i]);
+            }
+        }
+        std::ostringstream out;
+        out << "{\"id\":" << json_string(id)
+            << ",\"cmd\":\"takeover_dry_run\""
+            << ",\"include_armoury_core\":" << (include_core ? "true" : "false")
+            << "}";
+        return out.str();
+    }
+    if (command == "takeover-execute") {
+        bool accepted = false;
+        bool include_core = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--i-accept-stopping-lighting-services") {
+                accepted = true;
+            } else if (args[i] == "--include-armoury-core") {
+                include_core = true;
+            } else {
+                throw std::runtime_error("invalid takeover-execute flag: " + args[i]);
+            }
+        }
+        std::ostringstream out;
+        out << "{\"id\":" << json_string(id)
+            << ",\"cmd\":\"takeover_execute\""
+            << ",\"i_accept_stopping_lighting_services\":" << (accepted ? "true" : "false")
+            << ",\"include_armoury_core\":" << (include_core ? "true" : "false")
+            << "}";
+        return out.str();
+    }
+    if (command == "restore-services") {
+        return make_request_json(id, "restore_services");
     }
     if (command == "set" && args.size() == 2) {
         return make_request_json(id, "set", "rgb", args[1]);
@@ -186,6 +232,22 @@ private:
         if (request.cmd == "takeover_check") {
             const std::string result = hardware_.takeover_check_json();
             return result;
+        }
+        if (request.cmd == "service_status") {
+            return hardware_.service_status_json();
+        }
+        if (request.cmd == "takeover_dry_run") {
+            return hardware_.takeover_dry_run_json(request.include_armoury_core);
+        }
+        if (request.cmd == "takeover_execute") {
+            const std::string result = hardware_.takeover_execute_json(
+                request.i_accept_stopping_lighting_services,
+                request.include_armoury_core);
+            state_.mark_recover();
+            return result;
+        }
+        if (request.cmd == "restore_services") {
+            return hardware_.restore_services_json();
         }
         if (request.cmd == "bus_status") {
             return hardware_.bus_status_json();

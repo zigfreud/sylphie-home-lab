@@ -4,10 +4,65 @@
 #include "../sylphie_rgb/piix4_smbus.hpp"
 #include "../sylphie_rgb/process_check.hpp"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <tlhelp32.h>
+
+#include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
 namespace {
+enum class TakeoverTier {
+    Tier1,
+    Tier2WarnOnly,
+    NeverStop,
+};
+
+struct TakeoverRule {
+    const char* name;
+    bool service;
+    bool process;
+    TakeoverTier tier;
+};
+
+struct TakeoverTarget {
+    std::string name;
+    bool service = false;
+    bool process = false;
+    TakeoverTier tier = TakeoverTier::Tier1;
+    bool allowed_to_stop = false;
+    std::vector<unsigned long> pids;
+    bool service_exists = false;
+    bool service_running = false;
+    std::string service_state;
+    std::string start_mode;
+    std::string display_name;
+    std::string binary_path;
+    unsigned long service_pid = 0;
+};
+
+const TakeoverRule kTakeoverRules[] = {
+    {"LightingService", true, true, TakeoverTier::Tier1},
+    {"ArmourySocketServer", true, true, TakeoverTier::Tier1},
+    {"ArmourySwAgent", true, true, TakeoverTier::Tier1},
+    {"ArmouryHtmlDebugServer", true, true, TakeoverTier::Tier1},
+    {"Aura", true, true, TakeoverTier::Tier1},
+    {"OpenRGB", false, true, TakeoverTier::Tier1},
+    {"OpenAuraSDK", false, true, TakeoverTier::Tier1},
+    {"ArmouryCrate.Service", true, true, TakeoverTier::Tier2WarnOnly},
+    {"ArmouryCrate.UserSessionHelper", true, true, TakeoverTier::Tier2WarnOnly},
+    {"asus_framework", true, true, TakeoverTier::Tier2WarnOnly},
+    {"AsusCertService", true, true, TakeoverTier::NeverStop},
+};
+
 std::string hex_byte(uint8_t value) {
     const char* digits = "0123456789ABCDEF";
     std::string out;
@@ -18,6 +73,438 @@ std::string hex_byte(uint8_t value) {
 
 OwnershipConflicts current_ownership_conflicts() {
     return classify_process_matches(find_asus_lighting_processes());
+}
+
+std::string lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        if (ch >= 'A' && ch <= 'Z') {
+            return static_cast<char>(ch - 'A' + 'a');
+        }
+        return static_cast<char>(ch);
+    });
+    return value;
+}
+
+std::string strip_exe_suffix(const std::string& value) {
+    const std::string lower = lower_ascii(value);
+    if (lower.size() > 4 && lower.substr(lower.size() - 4) == ".exe") {
+        return value.substr(0, value.size() - 4);
+    }
+    return value;
+}
+
+std::string agent_windows_error_message(DWORD error) {
+    char* message = nullptr;
+    FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        error,
+        0,
+        reinterpret_cast<LPSTR>(&message),
+        0,
+        nullptr);
+    std::string text = message != nullptr ? message : "unknown Windows error";
+    if (message != nullptr) {
+        LocalFree(message);
+    }
+    while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) {
+        text.pop_back();
+    }
+    return text;
+}
+
+std::string service_state_text(DWORD state) {
+    switch (state) {
+    case SERVICE_STOPPED:
+        return "stopped";
+    case SERVICE_START_PENDING:
+        return "start_pending";
+    case SERVICE_STOP_PENDING:
+        return "stop_pending";
+    case SERVICE_RUNNING:
+        return "running";
+    case SERVICE_CONTINUE_PENDING:
+        return "continue_pending";
+    case SERVICE_PAUSE_PENDING:
+        return "pause_pending";
+    case SERVICE_PAUSED:
+        return "paused";
+    default:
+        return "unknown";
+    }
+}
+
+std::string start_mode_text(DWORD start_type) {
+    switch (start_type) {
+    case SERVICE_AUTO_START:
+        return "auto";
+    case SERVICE_BOOT_START:
+        return "boot";
+    case SERVICE_DEMAND_START:
+        return "manual";
+    case SERVICE_DISABLED:
+        return "disabled";
+    case SERVICE_SYSTEM_START:
+        return "system";
+    default:
+        return "unknown";
+    }
+}
+
+std::string executable_directory() {
+    char path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return ".";
+    }
+    std::string text(path, path + length);
+    const size_t pos = text.find_last_of("\\/");
+    if (pos == std::string::npos) {
+        return ".";
+    }
+    return text.substr(0, pos);
+}
+
+std::string parent_directory(const std::string& path) {
+    const size_t pos = path.find_last_of("\\/");
+    if (pos == std::string::npos) {
+        return ".";
+    }
+    return path.substr(0, pos);
+}
+
+std::string project_root_directory() {
+    const std::string exe_dir = executable_directory();
+    const std::string lower = lower_ascii(exe_dir);
+    if (lower.size() >= 4 && lower.substr(lower.size() - 4) == "\\bin") {
+        return parent_directory(exe_dir);
+    }
+    return ".";
+}
+
+std::string takeover_state_path() {
+    const std::string root = project_root_directory();
+    CreateDirectoryA((root + "\\.sylphie").c_str(), nullptr);
+    return root + "\\.sylphie\\takeover_state.json";
+}
+
+const char* tier_label(TakeoverTier tier) {
+    switch (tier) {
+    case TakeoverTier::Tier1:
+        return "tier1";
+    case TakeoverTier::Tier2WarnOnly:
+        return "tier2-warning";
+    case TakeoverTier::NeverStop:
+        return "never-stop";
+    }
+    return "unknown";
+}
+
+std::vector<unsigned long> find_exact_process_pids(const std::string& rule_name) {
+    std::vector<unsigned long> pids;
+    const std::string rule_lower = lower_ascii(rule_name);
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return pids;
+    }
+
+    PROCESSENTRY32 entry = {};
+    entry.dwSize = sizeof(entry);
+    if (!Process32First(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return pids;
+    }
+
+    do {
+        const std::string process_name = strip_exe_suffix(entry.szExeFile);
+        if (lower_ascii(process_name) == rule_lower) {
+            pids.push_back(entry.th32ProcessID);
+        }
+    } while (Process32Next(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return pids;
+}
+
+void query_service_details(SC_HANDLE scm, TakeoverTarget& target) {
+    target.service_exists = false;
+    target.service_running = false;
+    target.service_state = "not_found";
+    if (!target.service) {
+        return;
+    }
+
+    SC_HANDLE service = OpenServiceA(scm, target.name.c_str(), SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
+    if (service == nullptr) {
+        return;
+    }
+    target.service_exists = true;
+
+    SERVICE_STATUS_PROCESS status = {};
+    DWORD needed = 0;
+    if (QueryServiceStatusEx(
+            service,
+            SC_STATUS_PROCESS_INFO,
+            reinterpret_cast<LPBYTE>(&status),
+            sizeof(status),
+            &needed)) {
+        target.service_state = service_state_text(status.dwCurrentState);
+        target.service_running = status.dwCurrentState != SERVICE_STOPPED;
+        target.service_pid = status.dwProcessId;
+    }
+
+    DWORD bytes_needed = 0;
+    QueryServiceConfigA(service, nullptr, 0, &bytes_needed);
+    if (bytes_needed > 0) {
+        std::vector<uint8_t> buffer(bytes_needed);
+        QUERY_SERVICE_CONFIGA* config = reinterpret_cast<QUERY_SERVICE_CONFIGA*>(buffer.data());
+        if (QueryServiceConfigA(service, config, bytes_needed, &bytes_needed)) {
+            target.start_mode = start_mode_text(config->dwStartType);
+            if (config->lpDisplayName != nullptr) {
+                target.display_name = config->lpDisplayName;
+            }
+            if (config->lpBinaryPathName != nullptr) {
+                target.binary_path = config->lpBinaryPathName;
+            }
+        }
+    }
+
+    CloseServiceHandle(service);
+}
+
+std::vector<TakeoverTarget> collect_takeover_targets(bool include_armoury_core, bool only_present) {
+    std::vector<TakeoverTarget> targets;
+    SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
+    for (const TakeoverRule& rule : kTakeoverRules) {
+        TakeoverTarget target;
+        target.name = rule.name;
+        target.service = rule.service;
+        target.process = rule.process;
+        target.tier = rule.tier;
+        target.allowed_to_stop =
+            rule.tier == TakeoverTier::Tier1 ||
+            (include_armoury_core && rule.tier == TakeoverTier::Tier2WarnOnly && target.name != "AsusCertService");
+
+        if (rule.service && scm != nullptr) {
+            query_service_details(scm, target);
+        }
+        if (rule.process) {
+            target.pids = find_exact_process_pids(target.name);
+        }
+
+        if (!only_present || target.service_exists || !target.pids.empty()) {
+            targets.push_back(target);
+        }
+    }
+    if (scm != nullptr) {
+        CloseServiceHandle(scm);
+    }
+    return targets;
+}
+
+std::string target_to_json(const TakeoverTarget& target) {
+    std::ostringstream out;
+    out << "{"
+        << "\"name\":" << json_string(target.name) << ","
+        << "\"display_name\":" << json_string_or_null(target.display_name) << ","
+        << "\"tier\":" << json_string(tier_label(target.tier)) << ","
+        << "\"service\":" << (target.service ? "true" : "false") << ","
+        << "\"process\":" << (target.process ? "true" : "false") << ","
+        << "\"allowed_to_stop\":" << (target.allowed_to_stop ? "true" : "false") << ","
+        << "\"service_exists\":" << (target.service_exists ? "true" : "false") << ","
+        << "\"state\":" << json_string(target.service_state.empty() ? "unknown" : target.service_state) << ","
+        << "\"start_mode\":" << json_string_or_null(target.start_mode) << ","
+        << "\"pid\":" << target.service_pid << ","
+        << "\"account\":\"unknown\","
+        << "\"privilege\":\"unknown\","
+        << "\"path\":" << json_string_or_null(target.binary_path) << ","
+        << "\"process_pids\":[";
+    for (size_t i = 0; i < target.pids.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << target.pids[i];
+    }
+    out << "]}";
+    return out.str();
+}
+
+std::string targets_json_array(const std::vector<TakeoverTarget>& targets) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << target_to_json(targets[i]);
+    }
+    out << "]";
+    return out.str();
+}
+
+bool stop_service_by_name(SC_HANDLE scm, const std::string& service_name, std::string& report) {
+    SC_HANDLE service = OpenServiceA(scm, service_name.c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS);
+    if (service == nullptr) {
+        report = "service not found or access denied";
+        return false;
+    }
+
+    SERVICE_STATUS_PROCESS status = {};
+    DWORD needed = 0;
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status), &needed)) {
+        CloseServiceHandle(service);
+        report = "could not query service";
+        return false;
+    }
+    if (status.dwCurrentState == SERVICE_STOPPED) {
+        CloseServiceHandle(service);
+        report = "already stopped";
+        return false;
+    }
+
+    SERVICE_STATUS control_status = {};
+    if (!ControlService(service, SERVICE_CONTROL_STOP, &control_status)) {
+        const DWORD error = GetLastError();
+        CloseServiceHandle(service);
+        report = "stop failed: " + agent_windows_error_message(error);
+        return false;
+    }
+
+    for (int i = 0; i < 20; ++i) {
+        Sleep(250);
+        if (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status), &needed) &&
+            status.dwCurrentState == SERVICE_STOPPED) {
+            CloseServiceHandle(service);
+            report = "stopped";
+            return true;
+        }
+    }
+
+    CloseServiceHandle(service);
+    report = "stop requested; service did not report stopped within timeout";
+    return true;
+}
+
+bool terminate_process_by_pid(unsigned long pid, std::string& report) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (process == nullptr) {
+        report = "process not openable";
+        return false;
+    }
+    if (!TerminateProcess(process, 1)) {
+        const DWORD error = GetLastError();
+        CloseHandle(process);
+        report = "terminate failed: " + agent_windows_error_message(error);
+        return false;
+    }
+    WaitForSingleObject(process, 1500);
+    CloseHandle(process);
+    report = "terminated";
+    return true;
+}
+
+bool start_service_by_name(SC_HANDLE scm, const std::string& service_name, std::string& report) {
+    SC_HANDLE service = OpenServiceA(scm, service_name.c_str(), SERVICE_START | SERVICE_QUERY_STATUS);
+    if (service == nullptr) {
+        report = "service not found or access denied";
+        return false;
+    }
+    if (!StartServiceA(service, 0, nullptr)) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_SERVICE_ALREADY_RUNNING) {
+            CloseServiceHandle(service);
+            report = "already running";
+            return true;
+        }
+        CloseServiceHandle(service);
+        report = "start failed: " + agent_windows_error_message(error);
+        return false;
+    }
+    CloseServiceHandle(service);
+    report = "start requested";
+    return true;
+}
+
+void write_takeover_state(const std::vector<std::string>& stopped_services, const std::vector<unsigned long>& killed_pids) {
+    const std::string path = takeover_state_path();
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("could not write takeover state: " + path);
+    }
+
+    out << "{\n";
+    out << "  \"version\": 1,\n";
+    out << "  \"stopped_services\": [";
+    for (size_t i = 0; i < stopped_services.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << json_string(stopped_services[i]);
+    }
+    out << "],\n";
+    out << "  \"terminated_process_pids\": [";
+    for (size_t i = 0; i < killed_pids.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << killed_pids[i];
+    }
+    out << "]\n";
+    out << "}\n";
+}
+
+std::vector<std::string> read_stopped_services_from_state() {
+    const std::string path = takeover_state_path();
+    std::ifstream in(path);
+    if (!in) {
+        return {};
+    }
+    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string key = "\"stopped_services\"";
+    size_t pos = content.find(key);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    pos = content.find('[', pos);
+    const size_t end = content.find(']', pos);
+    if (pos == std::string::npos || end == std::string::npos) {
+        return {};
+    }
+
+    std::vector<std::string> services;
+    size_t cursor = pos + 1;
+    while (cursor < end) {
+        cursor = content.find('"', cursor);
+        if (cursor == std::string::npos || cursor >= end) {
+            break;
+        }
+        ++cursor;
+        std::ostringstream item;
+        bool escaped = false;
+        for (; cursor < end; ++cursor) {
+            const char c = content[cursor];
+            if (escaped) {
+                item << c;
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                ++cursor;
+                break;
+            }
+            item << c;
+        }
+        services.push_back(item.str());
+    }
+    return services;
+}
+
+std::string string_array_json(const std::vector<std::string>& values) {
+    return json_array(values);
 }
 }
 
@@ -92,6 +579,158 @@ std::string HardwareController::takeover_check_json() {
         << "\"blocking_conflicts\":" << json_array(ownership.blocking_conflicts) << ","
         << "\"warnings\":" << json_array(ownership.warnings) << ","
         << "\"conflicting_processes\":" << json_array(ownership.blocking_conflicts)
+        << "}";
+    return out.str();
+}
+
+std::string HardwareController::service_status_json() {
+    const auto targets = collect_takeover_targets(false, false);
+    const auto ownership = current_ownership_conflicts();
+    {
+        std::lock_guard<std::mutex> lock(conflict_mutex_);
+        last_blocking_conflicts_ = ownership.blocking_conflicts;
+        last_warnings_ = ownership.warnings;
+    }
+
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"services\":" << targets_json_array(targets) << ","
+        << "\"blocking_conflicts\":" << json_array(ownership.blocking_conflicts) << ","
+        << "\"warnings\":" << json_array(ownership.warnings)
+        << "}";
+    return out.str();
+}
+
+std::string HardwareController::takeover_dry_run_json(bool include_armoury_core) {
+    const auto targets = collect_takeover_targets(include_armoury_core, true);
+    std::vector<std::string> stop_services_first;
+    std::vector<std::string> terminate_processes_after;
+    std::vector<std::string> warn_only;
+
+    for (const auto& target : targets) {
+        if (target.allowed_to_stop) {
+            if (target.service && target.service_exists && target.service_running) {
+                stop_services_first.push_back(target.name);
+            }
+            if (target.process && !target.pids.empty()) {
+                terminate_processes_after.push_back(target.name);
+            }
+        } else {
+            warn_only.push_back(target.name);
+        }
+    }
+
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"mode\":\"dry-run\","
+        << "\"message\":\"LightingService will be stopped first when present. AsusCertService is warning-only and will not be stopped by default.\","
+        << "\"include_armoury_core\":" << (include_armoury_core ? "true" : "false") << ","
+        << "\"targets\":" << targets_json_array(targets) << ","
+        << "\"stop_services_first\":" << json_array(stop_services_first) << ","
+        << "\"terminate_processes_after\":" << json_array(terminate_processes_after) << ","
+        << "\"warnings_only\":" << json_array(warn_only)
+        << "}";
+    return out.str();
+}
+
+std::string HardwareController::takeover_execute_json(bool accepted_stop, bool include_armoury_core) {
+    if (!accepted_stop) {
+        throw std::runtime_error("takeover_execute requires i_accept_stopping_lighting_services=true");
+    }
+
+    std::lock_guard<std::mutex> lock(hardware_mutex_);
+    const auto targets = collect_takeover_targets(include_armoury_core, true);
+    std::vector<std::string> stopped_services;
+    std::vector<unsigned long> killed_pids;
+    std::vector<std::string> reports;
+
+    SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (scm == nullptr) {
+        throw std::runtime_error("could not open Service Control Manager: " + agent_windows_error_message(GetLastError()));
+    }
+
+    for (const auto& target : targets) {
+        if (!target.allowed_to_stop || !target.service || !target.service_exists || !target.service_running) {
+            continue;
+        }
+        std::string report;
+        const bool stopped = stop_service_by_name(scm, target.name, report);
+        reports.push_back("service " + target.name + ": " + report);
+        if (stopped) {
+            stopped_services.push_back(target.name);
+        }
+    }
+    CloseServiceHandle(scm);
+
+    Sleep(1000);
+
+    for (const auto& target : targets) {
+        if (!target.allowed_to_stop || !target.process) {
+            continue;
+        }
+        const std::vector<unsigned long> pids = find_exact_process_pids(target.name);
+        for (unsigned long pid : pids) {
+            std::string report;
+            const bool killed = terminate_process_by_pid(pid, report);
+            reports.push_back("process " + target.name + " pid=" + std::to_string(pid) + ": " + report);
+            if (killed) {
+                killed_pids.push_back(pid);
+            }
+        }
+    }
+
+    write_takeover_state(stopped_services, killed_pids);
+
+    Piix4Smbus smbus;
+    AuraEne aura(smbus);
+    aura.recover();
+
+    refresh_ownership();
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"mode\":\"execute\","
+        << "\"state_path\":" << json_string(takeover_state_path()) << ","
+        << "\"stopped_services\":" << json_array(stopped_services) << ","
+        << "\"terminated_process_pids\":[";
+    for (size_t i = 0; i < killed_pids.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << killed_pids[i];
+    }
+    out << "],\"reports\":" << json_array(reports) << ","
+        << "\"post_bus_status\":" << bus_status_json()
+        << "}";
+    return out.str();
+}
+
+std::string HardwareController::restore_services_json() {
+    std::lock_guard<std::mutex> lock(hardware_mutex_);
+    const std::vector<std::string> services = read_stopped_services_from_state();
+    std::vector<std::string> reports;
+
+    SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (scm == nullptr) {
+        throw std::runtime_error("could not open Service Control Manager: " + agent_windows_error_message(GetLastError()));
+    }
+
+    for (const std::string& service : services) {
+        std::string report;
+        start_service_by_name(scm, service, report);
+        reports.push_back(service + ": " + report);
+    }
+    CloseServiceHandle(scm);
+
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"state_path\":" << json_string(takeover_state_path()) << ","
+        << "\"restored_services\":" << json_array(services) << ","
+        << "\"reports\":" << json_array(reports) << ","
+        << "\"note\":\"restore-services only restarts services recorded by Sylphie; it does not recreate standalone processes\""
         << "}";
     return out.str();
 }

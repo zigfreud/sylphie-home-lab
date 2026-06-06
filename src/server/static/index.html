@@ -3,48 +3,104 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sylphie Home Lab</title>
+    <title>Sylphie Control Center</title>
     <link rel="stylesheet" href="/static/style.css">
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <h1>Sylphie Home Lab</h1>
-          <p>Local RGB control for the ASUS Aura/ENE 12V header.</p>
+          <h1>Sylphie Control Center</h1>
+          <p>Local operations panel for ASUS Aura/ENE RGB ownership, recovery, capture, and lights.</p>
         </div>
         <div class="status-actions">
           <span id="statusText">Idle</span>
-          <button id="healthButton" type="button">Health</button>
+          <button data-action="health" type="button">Health</button>
         </div>
       </header>
 
-      <section class="controls">
-        <div class="color-control">
+      <nav class="tabs" aria-label="Control Center sections">
+        <button class="tab-button active" data-tab="lights" type="button">Lights</button>
+        <button class="tab-button" data-tab="agent" type="button">Agent</button>
+        <button class="tab-button" data-tab="takeover" type="button">Armoury Takeover</button>
+        <button class="tab-button" data-tab="recovery" type="button">Recovery</button>
+        <button class="tab-button" data-tab="capture" type="button">Capture Lab</button>
+        <button class="tab-button" data-tab="logs" type="button">Logs</button>
+      </nav>
+
+      <section id="lights" class="tab-panel active">
+        <div class="toolbar">
           <input id="colorInput" type="color" value="#ff0000" aria-label="RGB color">
-          <button id="setColorButton" type="button">Set color</button>
+          <button data-action="setColor" type="button">Set color</button>
+          <button data-action="off" type="button">Off</button>
+          <span id="lastRgb">Last RGB: unknown</span>
         </div>
-
-        <div class="recovery-control">
-          <button id="recoverButton" type="button">Recover</button>
-          <button id="recoverLastButton" type="button">Recover + last color</button>
+        <div id="sceneButtons" class="button-grid"></div>
+        <div class="result-card">
+          <h2>Last Command</h2>
+          <pre id="lightsResult"></pre>
         </div>
-
-        <div class="takeover-control">
-          <button id="takeoverCheckButton" type="button">Takeover check</button>
-          <button id="takeoverDryRunButton" type="button">Takeover dry-run</button>
-          <button id="takeoverExecuteButton" type="button">Takeover execute</button>
-          <button id="restoreServicesButton" type="button">Restore services</button>
-        </div>
-
-        <div id="conflictAlert" class="conflict-alert" hidden></div>
-
-        <div id="sceneButtons" class="scene-grid" aria-label="Scenes"></div>
       </section>
 
-      <section class="log-panel">
-        <h2>Log</h2>
-        <pre id="logOutput"></pre>
+      <section id="agent" class="tab-panel">
+        <div class="toolbar">
+          <button data-action="agentPing" type="button">Ping</button>
+          <button data-action="agentStatus" type="button">Status</button>
+          <button data-action="startAgent" type="button">Start agent</button>
+          <button data-action="stopAgent" type="button">Stop agent</button>
+          <button data-action="restartAgent" type="button">Restart agent</button>
+        </div>
+        <div id="agentSummary" class="summary-grid"></div>
+        <pre id="agentResult"></pre>
+      </section>
+
+      <section id="takeover" class="tab-panel">
+        <div class="notice">LightingService will be stopped first. AsusCertService is warning-only and is not stopped by default.</div>
+        <div class="toolbar">
+          <button data-action="serviceStatus" type="button">Service status</button>
+          <button data-action="takeoverCheck" type="button">Takeover check</button>
+          <button data-action="takeoverDryRun" type="button">Takeover dry-run</button>
+          <button data-action="takeoverExecute" class="danger" type="button">Takeover execute</button>
+          <button data-action="restoreServices" type="button">Restore services</button>
+        </div>
+        <div id="conflictAlert" class="conflict-alert" hidden></div>
+        <div id="serviceTable" class="service-table"></div>
+        <pre id="takeoverResult"></pre>
+      </section>
+
+      <section id="recovery" class="tab-panel">
+        <div class="toolbar">
+          <button data-action="busStatus" type="button">bus-status</button>
+          <button data-action="recover" type="button">recover</button>
+          <button data-action="recoverWhite" type="button">recover-set white</button>
+          <button data-action="recoverRed" type="button">recover-set red</button>
+          <button data-action="recoverLast" type="button">recover-set last color</button>
+          <button data-action="experimentalArmouryFe" type="button">experimental recover-armoury-fe-set</button>
+          <button data-action="experimentalClearMode" type="button">experimental recover-clear-mode-set</button>
+        </div>
+        <pre id="recoveryResult"></pre>
+      </section>
+
+      <section id="capture" class="tab-panel">
+        <div class="toolbar">
+          <button data-action="startBroadCapture" type="button">Start broad capture</button>
+          <button data-action="startArmouryCapture" type="button">Start Armoury UI capture</button>
+          <button data-action="stopCapture" type="button">Stop capture</button>
+          <button data-action="captureStatus" type="button">Status</button>
+        </div>
+        <div class="button-grid compact" id="markerButtons"></div>
+        <div id="captureSummary" class="notice">No capture status loaded.</div>
+        <pre id="captureTail"></pre>
+      </section>
+
+      <section id="logs" class="tab-panel">
+        <div class="toolbar">
+          <button data-action="tailServerLog" type="button">server.log</button>
+          <button data-action="tailAgentLog" type="button">agent.log</button>
+          <button data-action="tailCommandsLog" type="button">commands.jsonl</button>
+          <button data-action="tailCaptureLog" type="button">latest capture tail</button>
+        </div>
+        <pre id="logsResult"></pre>
       </section>
     </main>
 

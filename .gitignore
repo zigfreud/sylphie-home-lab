@@ -20,12 +20,15 @@ x86/
 *.log
 logs/
 research/logs/
+research/captures/
 captures/
 dumps/
 *.txt
 *.nfo
 data/
 .sylphie/
+*_capture_master.log
+*_segment_*.log
 
 # Local reverse-engineering scratch
 tests/test_openrgb.py

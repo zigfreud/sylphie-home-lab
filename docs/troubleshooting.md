@@ -109,6 +109,31 @@ bin\sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services --i
 
 Sylphie does not delete services, uninstall Armoury, or change service startup type.
 
+## Correct Takeover Order
+
+Do not kill Armoury helper processes before stopping `LightingService`. `LightingService` can recreate the helpers and reclaim the controller.
+
+Correct order:
+
+1. Stop `LightingService` first.
+2. Wait for the service to stop.
+3. Terminate only whitelisted leftover Armoury/Aura/OpenRGB processes.
+4. Start or use the elevated Sylphie agent.
+5. Run recover/rearm.
+6. Set RGB.
+
+The Control Center `Armoury Takeover` tab and agent takeover commands follow this order.
+
+## Why The Server Is Not Elevated
+
+The HTTP server binds to `127.0.0.1` and serves the dashboard/API. It should not run elevated because browser-facing HTTP code does not need direct SMBus or service-control privileges.
+
+Privileged work belongs to `sylphie_agent.exe`, which runs elevated as a Scheduled Task and listens on a local named pipe. The server asks the agent for hardware writes, recovery, service status, and takeover operations.
+
+## Capture Lab Notes
+
+The Control Center `Capture Lab` can start broad or Armoury UI capture probes and records marker clicks in a sidecar marker log. The probes remain read-only: they use `Inp32`, never call `Out32`, and only read `SMBBLKDAT/+0x07` on block-write events when payload capture is enabled.
+
 ## When To Use Takeover
 
 Use takeover when:

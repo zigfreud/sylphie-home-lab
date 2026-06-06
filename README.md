@@ -78,7 +78,7 @@ The executable is written to `bin\sylphie_rgb.exe`.
 
 ## Local API / Dashboard
 
-The local dashboard wraps `sylphie_rgb.exe` through a small Python standard-library HTTP server. It binds to `127.0.0.1` by default.
+The local dashboard runs through a small Python standard-library HTTP server. It binds to `127.0.0.1` by default and prefers `sylphie_agent.exe` for hardware operations.
 
 ```bat
 python src/server/sylphie_server.py --host 127.0.0.1 --port 8765 --exe bin/sylphie_rgb.exe
@@ -99,6 +99,37 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/api/off
 ```
 
 The server never accepts arbitrary shell commands and calls the backend with `shell=False`.
+
+## Sylphie Control Center
+
+Start the local operations panel:
+
+```bat
+.\start_sylphie.bat
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765/
+```
+
+The Control Center has these tabs:
+
+- `Lights`: scenes, color picker, off, last RGB, and last command result.
+- `Agent`: ping/status plus start, stop, and restart actions for the Scheduled Task agent.
+- `Armoury Takeover`: service/process status, takeover dry-run, explicit takeover execute, and restore services.
+- `Recovery`: bus-status, recover, recover-set white/red/last color, and placeholders for experimental recovery flows.
+- `Capture Lab`: start broad capture, start Armoury UI capture, stop capture, sidecar markers, and capture log tail.
+- `Logs`: safe tail views for `logs/server.log`, `logs/agent.log`, `logs/commands.jsonl`, and the current capture log.
+
+The HTTP server is not elevated. Privileged hardware and ownership operations go through `sylphie_agent.exe` over the local named pipe. If the agent is not running, the UI shows agent errors and the user should run:
+
+```powershell
+.\scripts\start_agent.ps1
+```
+
+The server exposes only fixed endpoints and whitelisted scripts. It does not accept arbitrary commands, paths, or shell input. For debug-only CLI fallback, start the server with `SYLPHIE_USE_AGENT=0`.
 
 ## Controller Ownership and Recovery
 
@@ -163,7 +194,7 @@ Armoury/Aura may stop controlling RGB until `restore-services` runs or the machi
 
 ## Hardware Agent
 
-`sylphie_agent.exe` is the persistent elevated hardware owner prototype. It listens on the local named pipe `\\.\pipe\sylphie-hw`, serializes hardware writes, and calls the native SMBus/Aura layer directly. The HTTP server should remain non-elevated; it can use the agent through `SYLPHIE_USE_AGENT=1` in a future/experimental run.
+`sylphie_agent.exe` is the persistent elevated hardware owner prototype. It listens on the local named pipe `\\.\pipe\sylphie-hw`, serializes hardware writes, performs privileged ownership/recovery operations, and calls the native SMBus/Aura layer directly. The HTTP server should remain non-elevated.
 
 Build:
 
@@ -195,6 +226,16 @@ logs/agent.log
 ```
 
 Do not run Armoury, Aura, OpenRGB, or `LightingService` at the same time as the agent. The agent refuses write commands when known controller conflicts are detected unless it was started with the debug-only `--allow-conflicts` flag.
+
+Takeover from the agent follows the safe order:
+
+1. Stop `LightingService` and other allowed services first.
+2. Wait briefly.
+3. Terminate only whitelisted leftover processes.
+4. Save `.sylphie/takeover_state.json`.
+5. Run bus status and conservative recovery.
+
+`AsusCertService` is warning-only and is not stopped by default.
 
 ## Starting Sylphie
 

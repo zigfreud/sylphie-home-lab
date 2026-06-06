@@ -104,6 +104,33 @@ bool extract_json_string(const std::string& line, const std::string& key, std::s
     }
     return false;
 }
+
+bool extract_json_bool(const std::string& line, const std::string& key, bool& value) {
+    const std::string pattern = "\"" + key + "\"";
+    size_t pos = line.find(pattern);
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    pos = line.find(':', pos + pattern.size());
+    if (pos == std::string::npos) {
+        return false;
+    }
+    ++pos;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        ++pos;
+    }
+
+    if (line.compare(pos, 4, "true") == 0) {
+        value = true;
+        return true;
+    }
+    if (line.compare(pos, 5, "false") == 0) {
+        value = false;
+        return true;
+    }
+    return false;
+}
 }
 
 AgentState::AgentState()
@@ -327,5 +354,7 @@ bool parse_command_request(const std::string& line, CommandRequest& request, std
     extract_json_string(line, "id", request.id);
     extract_json_string(line, "rgb", request.rgb);
     extract_json_string(line, "name", request.name);
+    extract_json_bool(line, "i_accept_stopping_lighting_services", request.i_accept_stopping_lighting_services);
+    extract_json_bool(line, "include_armoury_core", request.include_armoury_core);
     return true;
 }

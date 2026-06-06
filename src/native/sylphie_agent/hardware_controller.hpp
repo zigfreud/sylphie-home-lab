@@ -12,6 +12,10 @@ public:
 
     std::string doctor_json();
     std::string takeover_check_json();
+    std::string service_status_json();
+    std::string takeover_dry_run_json(bool include_armoury_core);
+    std::string takeover_execute_json(bool accepted_stop, bool include_armoury_core);
+    std::string restore_services_json();
     std::string bus_status_json();
     void refresh_ownership();
 

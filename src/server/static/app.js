@@ -1,17 +1,4 @@
-const scenes = [
-  "focus",
-  "movie",
-  "night",
-  "reading",
-  "cyberpunk",
-  "deepblue",
-  "red",
-  "green",
-  "blue",
-  "white",
-  "off",
-];
-
+const scenes = ["focus", "movie", "night", "reading", "cyberpunk", "deepblue", "red", "green", "blue", "white", "off"];
 const sceneRgb = {
   focus: "FFFFFF",
   movie: "202060",
@@ -25,238 +12,278 @@ const sceneRgb = {
   white: "FFFFFF",
   off: "000000",
 };
+const markers = [
+  "SERVICE_STOPPED",
+  "SERVICE_STARTED",
+  "FIRST_LIGHT",
+  "MOUSE_COLOR_SELECTED",
+  "OK_CLICKED",
+  "APPLY_CLICKED",
+  "WHITE",
+  "RED",
+  "GREEN",
+  "BLUE",
+  "OTHER",
+];
 
-const logOutput = document.getElementById("logOutput");
-const sceneButtons = document.getElementById("sceneButtons");
-const colorInput = document.getElementById("colorInput");
-const setColorButton = document.getElementById("setColorButton");
-const healthButton = document.getElementById("healthButton");
 const statusText = document.getElementById("statusText");
-const recoverButton = document.getElementById("recoverButton");
-const recoverLastButton = document.getElementById("recoverLastButton");
-const takeoverCheckButton = document.getElementById("takeoverCheckButton");
-const takeoverDryRunButton = document.getElementById("takeoverDryRunButton");
-const takeoverExecuteButton = document.getElementById("takeoverExecuteButton");
-const restoreServicesButton = document.getElementById("restoreServicesButton");
+const colorInput = document.getElementById("colorInput");
+const lastRgb = document.getElementById("lastRgb");
 const conflictAlert = document.getElementById("conflictAlert");
+const results = {
+  lights: document.getElementById("lightsResult"),
+  agent: document.getElementById("agentResult"),
+  takeover: document.getElementById("takeoverResult"),
+  recovery: document.getElementById("recoveryResult"),
+  capture: document.getElementById("captureTail"),
+  logs: document.getElementById("logsResult"),
+};
+const agentSummary = document.getElementById("agentSummary");
+const serviceTable = document.getElementById("serviceTable");
+const captureSummary = document.getElementById("captureSummary");
 
-let applying = false;
-let activeAction = null;
+let busy = false;
 let lastRequestedRgb = "FF0000";
-const sceneButtonElements = new Map();
 
-function log(payload) {
-  logOutput.textContent = JSON.stringify(summarizePayload(payload), null, 2);
+function activePanelName() {
+  return document.querySelector(".tab-panel.active")?.id || "lights";
 }
 
-function summarizePayload(payload) {
-  if (!payload || typeof payload !== "object") {
-    return payload;
-  }
+function setBusy(value, text = "Running...") {
+  busy = value;
+  statusText.textContent = value ? text : "Idle";
+  document.querySelectorAll("button[data-action]").forEach((button) => {
+    button.disabled = value;
+  });
+}
 
-  const copy = Array.isArray(payload) ? [...payload] : {
-    ok: payload.ok,
-    applied: payload.applied,
-    command: payload.command,
-    exit_code: payload.exit_code,
-    duration_ms: payload.duration_ms,
-    conflicting_processes: payload.conflicting_processes,
-    stdout: payload.stdout,
-    stderr: payload.stderr,
-    error: payload.error,
-  };
-  for (const key of ["stdout", "stderr", "raw"]) {
-    if (typeof copy[key] === "string" && copy[key].length > 1200) {
-      copy[key] = `${copy[key].slice(0, 1200)}\n... truncated ...`;
+function pretty(payload) {
+  return JSON.stringify(trimPayload(payload), null, 2);
+}
+
+function trimPayload(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  const copy = Array.isArray(payload) ? payload.map(trimPayload) : {...payload};
+  for (const key of ["stdout", "stderr", "text", "raw"]) {
+    if (typeof copy[key] === "string" && copy[key].length > 2500) {
+      copy[key] = `${copy[key].slice(0, 2500)}\n... truncated ...`;
     }
   }
-  if (copy.doctor) {
-    copy.doctor = summarizePayload(copy.doctor);
-  }
-  if (copy.last_result) {
-    copy.last_result = summarizePayload(copy.last_result);
-  }
+  if (copy.response) copy.response = trimPayload(copy.response);
+  if (copy.last_result) copy.last_result = trimPayload(copy.last_result);
+  if (copy.state) copy.state = trimPayload(copy.state);
   return copy;
 }
 
-function setApplying(value, label = "Applying...") {
-  applying = value;
-  if (value) {
-    statusText.textContent = label;
-  }
-  setColorButton.disabled = value;
-  healthButton.disabled = value;
-  recoverButton.disabled = value;
-  recoverLastButton.disabled = value;
-  takeoverCheckButton.disabled = value;
-  takeoverDryRunButton.disabled = value;
-  takeoverExecuteButton.disabled = value;
-  restoreServicesButton.disabled = value;
-  for (const button of sceneButtonElements.values()) {
-    button.disabled = value;
-  }
+function show(panel, payload) {
+  if (results[panel]) results[panel].textContent = pretty(payload);
+  updateConflictAlert(payload);
+  updateAgentSummary(payload);
+  updateServices(payload);
+  updateCaptureSummary(payload);
 }
 
 function updateConflictAlert(payload) {
-  const conflicts = payload && payload.conflicting_processes;
-  if (Array.isArray(conflicts) && conflicts.length > 0) {
+  const state = payload?.response?.state || payload?.state || payload?.agent_status?.response?.state;
+  const blockers = state?.blocking_conflicts || payload?.blocking_conflicts || payload?.response?.state?.last_result?.blocking_conflicts;
+  const warnings = state?.warnings || payload?.warnings || payload?.response?.state?.last_result?.warnings;
+  if ((blockers && blockers.length) || payload?.error === "controller conflict detected") {
     conflictAlert.hidden = false;
-    conflictAlert.textContent = `Controller conflict detected: ${conflicts.join(", ")}. Close Armoury/Aura/OpenRGB before writing.`;
+    conflictAlert.textContent = `Blocking conflicts: ${(blockers || []).join(", ") || payload.error}. Run takeover first.`;
     return;
   }
-
-  if (payload && payload.error === "controller conflict detected") {
+  if (warnings && warnings.length) {
     conflictAlert.hidden = false;
-    conflictAlert.textContent = payload.suggestion || "Controller conflict detected. Run takeover first or close Armoury/Aura/OpenRGB before writing.";
+    conflictAlert.textContent = `Warnings only: ${warnings.join(", ")}`;
     return;
   }
-
   conflictAlert.hidden = true;
   conflictAlert.textContent = "";
 }
 
-async function requestJson(path, options = {}) {
+function updateAgentSummary(payload) {
+  const state = payload?.response?.state || payload?.agent_status?.response?.state;
+  if (!state) return;
+  const uptime = state.start_time ? Math.max(0, Math.floor(Date.now() / 1000 - state.start_time)) : null;
+  const items = [
+    ["Agent status", state.current_owner_status || "unknown"],
+    ["is_elevated", String(state.is_elevated)],
+    ["PID", state.pid || "unknown"],
+    ["uptime", uptime === null ? "unknown" : `${uptime}s`],
+    ["pipe", "\\\\.\\pipe\\sylphie-hw"],
+    ["blocking_conflicts", (state.blocking_conflicts || []).join(", ") || "none"],
+    ["warnings", (state.warnings || []).join(", ") || "none"],
+  ];
+  agentSummary.innerHTML = items.map(([label, value]) => `<div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div>`).join("");
+}
+
+function updateServices(payload) {
+  const services = payload?.response?.state?.last_result?.services || payload?.response?.services || payload?.services;
+  if (!Array.isArray(services)) return;
+  serviceTable.innerHTML = `
+    <table>
+      <thead><tr><th>Name</th><th>State</th><th>Tier</th><th>PID</th><th>Action</th></tr></thead>
+      <tbody>
+        ${services.map((svc) => `
+          <tr>
+            <td>${escapeHtml(svc.name || "")}</td>
+            <td>${escapeHtml(svc.state || "unknown")}</td>
+            <td>${escapeHtml(svc.tier || "")}</td>
+            <td>${escapeHtml(String(svc.pid || (svc.process_pids || []).join(", ") || ""))}</td>
+            <td>${svc.allowed_to_stop ? "stop allowed" : "warning only"}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+}
+
+function updateCaptureSummary(payload) {
+  if (!("running" in (payload || {})) && !payload?.log && !payload?.marker_log) return;
+  captureSummary.textContent = `Capture running: ${payload.running} | type: ${payload.type || "none"} | log: ${payload.log || "none"}`;
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+async function request(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json();
-  updateConflictAlert(payload);
-  log(payload);
+  if (!response.ok && !payload.error) payload.error = `HTTP ${response.status}`;
   return payload;
 }
 
-async function runAction(actionKey, callback) {
-  if (applying && activeAction === actionKey) {
-    return;
+async function post(path, body = undefined) {
+  const options = {method: "POST"};
+  if (body !== undefined) {
+    options.headers = {"Content-Type": "application/json"};
+    options.body = JSON.stringify(body);
   }
-  if (applying) {
-    return;
-  }
+  return request(path, options);
+}
 
-  activeAction = actionKey;
-  setApplying(true);
+async function run(panel, label, fn) {
+  if (busy) return;
+  setBusy(true, label);
   try {
-    const payload = await callback();
-    if (payload.ok && payload.applied) {
-      statusText.textContent = "Applied";
-    } else {
-      statusText.textContent = payload.error ? "Error" : "Not applied";
-    }
+    const payload = await fn();
+    show(panel, payload);
+    statusText.textContent = payload.ok ? "Done" : "Error";
+    return payload;
   } catch (error) {
-    log({ok: false, error: String(error)});
+    const payload = {ok: false, error: String(error)};
+    show(panel, payload);
     statusText.textContent = "Error";
+    return payload;
   } finally {
-    activeAction = null;
-    setApplying(false);
+    setBusy(false);
   }
 }
 
-async function setColor() {
-  const rgb = colorInput.value.replace("#", "").toUpperCase();
-  await runAction(`set:${rgb}`, () => {
-    lastRequestedRgb = rgb;
-    return requestJson("/api/set", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({rgb}),
+function wireTabs() {
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".tab-button").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      document.getElementById(button.dataset.tab).classList.add("active");
     });
-  });
-}
-
-async function setScene(name) {
-  await runAction(`scene:${name}`, () => {
-    if (sceneRgb[name]) {
-      lastRequestedRgb = sceneRgb[name];
-    }
-
-    if (name === "off") {
-      return requestJson("/api/off", {method: "POST"});
-    }
-
-    return requestJson("/api/scene", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name}),
-    });
-  });
-}
-
-async function recoverController() {
-  await runAction("recover", () => {
-    return requestJson("/api/recover", {method: "POST"});
-  });
-}
-
-async function recoverLastColor() {
-  const rgb = lastRequestedRgb || colorInput.value.replace("#", "").toUpperCase();
-  await runAction(`recover-set:${rgb}`, () => {
-    return requestJson("/api/recover-set", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({rgb}),
-    });
-  });
-}
-
-async function takeoverCheck() {
-  await runAction("takeover-check", () => {
-    return requestJson("/api/takeover-check", {method: "POST"});
-  });
-}
-
-async function takeoverDryRun() {
-  await runAction("takeover-dry-run", () => {
-    return requestJson("/api/takeover", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({execute: false}),
-    });
-  });
-}
-
-async function takeoverExecute() {
-  const accepted = window.confirm("Sylphie will stop whitelisted lighting services/processes and run recovery. Continue?");
-  if (!accepted) {
-    return;
-  }
-  await runAction("takeover-execute", () => {
-    return requestJson("/api/takeover", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({execute: true, accept: true}),
-    });
-  });
-}
-
-async function restoreServices() {
-  await runAction("restore-services", () => {
-    return requestJson("/api/restore-services", {method: "POST"});
   });
 }
 
 function buildSceneButtons() {
-  for (const scene of scenes) {
+  const root = document.getElementById("sceneButtons");
+  root.innerHTML = "";
+  scenes.forEach((scene) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.dataset.action = `scene:${scene}`;
     button.textContent = scene;
     button.addEventListener("click", () => setScene(scene));
-    sceneButtons.appendChild(button);
-    sceneButtonElements.set(scene, button);
-  }
+    root.appendChild(button);
+  });
 }
 
-healthButton.addEventListener("click", async () => {
-  setApplying(true, "Checking...");
-  try {
-    await requestJson("/api/health");
-  } finally {
-    statusText.textContent = "Idle";
-    setApplying(false);
+function buildMarkerButtons() {
+  const root = document.getElementById("markerButtons");
+  root.innerHTML = "";
+  markers.forEach((marker) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.action = `marker:${marker}`;
+    button.textContent = marker;
+    button.addEventListener("click", () => run("capture", "Marking...", () => post("/api/capture/marker", {marker})));
+    root.appendChild(button);
+  });
+}
+
+async function setScene(name) {
+  if (sceneRgb[name]) {
+    lastRequestedRgb = sceneRgb[name];
+    lastRgb.textContent = `Last RGB: ${lastRequestedRgb}`;
   }
+  if (name === "off") {
+    return run("lights", "Applying off...", () => post("/api/off"));
+  }
+  return run("lights", `Applying ${name}...`, () => post("/api/scene", {name}));
+}
+
+const actions = {
+  health: () => run(activePanelName(), "Checking...", () => request("/api/health")),
+  setColor: () => {
+    const rgb = colorInput.value.replace("#", "").toUpperCase();
+    lastRequestedRgb = rgb;
+    lastRgb.textContent = `Last RGB: ${rgb}`;
+    return run("lights", "Applying color...", () => post("/api/set", {rgb}));
+  },
+  off: () => setScene("off"),
+  agentPing: () => run("agent", "Pinging agent...", () => post("/api/agent/ping")),
+  agentStatus: () => run("agent", "Loading agent status...", () => request("/api/agent/status")),
+  startAgent: () => run("agent", "Starting agent...", () => post("/api/lifecycle/start-agent")),
+  stopAgent: () => run("agent", "Stopping agent...", () => post("/api/lifecycle/stop-agent")),
+  restartAgent: () => run("agent", "Restarting agent...", () => post("/api/lifecycle/restart-agent")),
+  serviceStatus: () => run("takeover", "Loading services...", () => request("/api/services/status")),
+  takeoverCheck: () => run("takeover", "Checking takeover...", () => post("/api/agent/takeover-check")),
+  takeoverDryRun: () => run("takeover", "Planning takeover...", () => post("/api/agent/takeover-dry-run", {})),
+  takeoverExecute: () => {
+    if (!window.confirm("Stop ASUS lighting services and take ownership? LightingService will be stopped first.")) return;
+    return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {i_accept_stopping_lighting_services: true}));
+  },
+  restoreServices: () => run("takeover", "Restoring services...", () => post("/api/agent/restore-services")),
+  busStatus: () => run("recovery", "Reading bus status...", () => post("/api/agent/bus-status")),
+  recover: () => run("recovery", "Recovering...", () => post("/api/agent/recover")),
+  recoverWhite: () => run("recovery", "Recovering white...", () => post("/api/agent/recover-set", {rgb: "FFFFFF"})),
+  recoverRed: () => run("recovery", "Recovering red...", () => post("/api/agent/recover-set", {rgb: "FF0000"})),
+  recoverLast: () => run("recovery", "Recovering last color...", () => post("/api/agent/recover-set", {rgb: lastRequestedRgb || "FFFFFF"})),
+  experimentalArmouryFe: () => run("recovery", "Experimental command unavailable...", async () => ({ok: false, error: "Not wired yet. Use CLI experimental command manually for now."})),
+  experimentalClearMode: () => run("recovery", "Experimental command unavailable...", async () => ({ok: false, error: "Not wired yet. Use CLI experimental command manually for now."})),
+  startBroadCapture: () => run("capture", "Starting broad capture...", () => post("/api/capture/start", {type: "broad", capture_block_payload: true})),
+  startArmouryCapture: () => run("capture", "Starting Armoury UI capture...", () => post("/api/capture/start", {type: "armoury-ui", capture_block_payload: true})),
+  stopCapture: () => run("capture", "Stopping capture...", () => post("/api/capture/stop")),
+  captureStatus: () => run("capture", "Loading capture status...", () => request("/api/capture/status")),
+  tailServerLog: () => run("logs", "Loading server log...", () => request("/api/logs/tail?name=server&lines=200")),
+  tailAgentLog: () => run("logs", "Loading agent log...", () => request("/api/logs/tail?name=agent&lines=200")),
+  tailCommandsLog: () => run("logs", "Loading command log...", () => request("/api/logs/tail?name=commands&lines=200")),
+  tailCaptureLog: () => run("logs", "Loading capture tail...", () => request("/api/capture/tail?lines=200")),
+};
+
+function wireActions() {
+  document.querySelectorAll("button[data-action]").forEach((button) => {
+    const action = button.dataset.action;
+    if (action.startsWith("scene:") || action.startsWith("marker:")) return;
+    button.addEventListener("click", () => {
+      if (actions[action]) actions[action]();
+    });
+  });
+}
+
+colorInput.addEventListener("input", () => {
+  lastRequestedRgb = colorInput.value.replace("#", "").toUpperCase();
+  lastRgb.textContent = `Last RGB: ${lastRequestedRgb} (preview)`;
 });
-setColorButton.addEventListener("click", setColor);
-recoverButton.addEventListener("click", recoverController);
-recoverLastButton.addEventListener("click", recoverLastColor);
-takeoverCheckButton.addEventListener("click", takeoverCheck);
-takeoverDryRunButton.addEventListener("click", takeoverDryRun);
-takeoverExecuteButton.addEventListener("click", takeoverExecute);
-restoreServicesButton.addEventListener("click", restoreServices);
+
+wireTabs();
 buildSceneButtons();
+buildMarkerButtons();
+wireActions();
+actions.agentStatus();
