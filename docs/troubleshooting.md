@@ -15,6 +15,26 @@ Confirm that the `exe` path is absolute and points to `bin\sylphie_rgb.exe`. If 
 .\scripts\start_sylphie.ps1 -Restart
 ```
 
+The Control Center prefers the elevated agent by default. If agent endpoints fail, check:
+
+```powershell
+.\scripts\status_agent.ps1
+.\scripts\start_agent.ps1
+```
+
+Use `SYLPHIE_USE_AGENT=0` only for debug CLI fallback.
+
+## Build Fails Because sylphie_agent.exe Is In Use
+
+If `src\native\sylphie_agent\build.bat` cannot overwrite `bin\sylphie_agent.exe`, stop the running agent first:
+
+```powershell
+.\scripts\stop_agent.ps1
+src\native\sylphie_agent\build.bat
+```
+
+This does not touch the SMBus hardware path; it only stops the Sylphie agent process/Scheduled Task.
+
 ## Dashboard Works Randomly
 
 The dashboard calls the native CLI synchronously and serializes hardware commands. Random behavior usually means another controller is also touching the Aura/ENE device.
@@ -133,6 +153,13 @@ Privileged work belongs to `sylphie_agent.exe`, which runs elevated as a Schedul
 ## Capture Lab Notes
 
 The Control Center `Capture Lab` can start broad or Armoury UI capture probes and records marker clicks in a sidecar marker log. The probes remain read-only: they use `Inp32`, never call `Out32`, and only read `SMBBLKDAT/+0x07` on block-write events when payload capture is enabled.
+
+If a capture does not start from the panel, confirm the probe exists:
+
+```powershell
+tools\probes\build_armoury_ui_capture.bat
+src\native\sylphie_piix4_broad_capture\build.bat
+```
 
 ## When To Use Takeover
 

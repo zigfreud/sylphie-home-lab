@@ -2,12 +2,15 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-set "ROOT_DIR=%SCRIPT_DIR%..\..\.."
+pushd "%SCRIPT_DIR%..\..\.." >nul
+set "ROOT_DIR=%CD%"
+popd >nul
 set "OUT_DIR=%ROOT_DIR%\bin"
 
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
 cl /nologo /std:c++17 /EHsc /W4 /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
+  /Fo"%OUT_DIR%\\" /Fd"%OUT_DIR%\\" ^
   /Fe"%OUT_DIR%\sylphie_rgb.exe" ^
   "%SCRIPT_DIR%main.cpp" ^
   "%SCRIPT_DIR%piix4_smbus.cpp" ^

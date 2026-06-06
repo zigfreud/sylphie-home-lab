@@ -25,19 +25,45 @@ TODO: tighten named pipe ACLs to the current user and Administrators explicitly.
 
 ## HTTP Server
 
-`src/server/sylphie_server.py` is the localhost API/dashboard server. It must not run elevated. By default it still calls `sylphie_rgb.exe` for compatibility.
+`src/server/sylphie_server.py` is the localhost API/dashboard server. It must not run elevated. By default it routes compatible hardware and ownership operations through `sylphie_agent.exe` over `\\.\pipe\sylphie-hw`.
 
-Set this environment variable to route compatible hardware commands through the agent:
+Set this environment variable only for debug CLI fallback:
 
 ```powershell
-$env:SYLPHIE_USE_AGENT = "1"
+$env:SYLPHIE_USE_AGENT = "0"
 ```
 
 The server continues to bind to `127.0.0.1` by default.
 
+The server never accepts arbitrary commands or paths from HTTP. Lifecycle actions use a whitelist of project scripts, log tail endpoints use a whitelist of log names, and capture actions use whitelisted probe executables.
+
 ## Dashboard
 
 The static dashboard calls the HTTP API only. It does not talk to SMBus, `inpout32.dll`, or the named pipe directly.
+
+Current tabs:
+
+- Lights
+- Agent
+- Armoury Takeover
+- Recovery
+- Capture Lab
+- Logs
+
+Capture Lab starts read-only probes and records UI marker clicks into sidecar marker logs. It does not elevate the HTTP server.
+
+## Ownership Flow
+
+The safe takeover order is:
+
+1. Stop `LightingService` first.
+2. Wait for service stop/release.
+3. Terminate only whitelisted Armoury/Aura/OpenRGB leftover processes.
+4. Save `.sylphie/takeover_state.json`.
+5. Run bus-status and conservative recovery.
+6. Apply RGB through the confirmed direct path.
+
+`AsusCertService` is warning-only and is not stopped by default.
 
 ## Future Integrations
 

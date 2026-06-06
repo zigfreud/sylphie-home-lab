@@ -74,9 +74,23 @@ Build from the x86 Native Tools Command Prompt for Visual Studio 2019:
 
 ```bat
 src\native\sylphie_rgb\build.bat
+src\native\sylphie_agent\build.bat
+src\native\sylphie_piix4_broad_capture\build.bat
+tools\probes\build_armoury_ui_capture.bat
 ```
 
-The executable is written to `bin\sylphie_rgb.exe`.
+The executables are written to `bin\`:
+
+- `sylphie_rgb.exe`
+- `sylphie_agent.exe`
+- `sylphie_piix4_broad_capture.exe`
+- `sylphie_piix4_armoury_ui_capture.exe`
+
+If `sylphie_agent.exe` is already running, stop it before rebuilding:
+
+```powershell
+.\scripts\stop_agent.ps1
+```
 
 ## Runtime Dependency
 
@@ -136,6 +150,8 @@ The HTTP server is not elevated. Privileged hardware and ownership operations go
 ```
 
 The server exposes only fixed endpoints and whitelisted scripts. It does not accept arbitrary commands, paths, or shell input. For debug-only CLI fallback, start the server with `SYLPHIE_USE_AGENT=0`.
+
+Capture Lab starts only whitelisted local probe executables from `bin\`. Markers are written through the dashboard into a sidecar marker log under `research/captures/`, so capture workflows do not require typing probe commands by hand.
 
 ## Controller Ownership and Recovery
 
