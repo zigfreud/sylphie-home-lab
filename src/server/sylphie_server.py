@@ -364,7 +364,7 @@ class SylphieServer:
             },
         )
 
-    def run_hardware_command(self, args, rgb=None, scene=None, check_takeover=True):
+    def run_hardware_command(self, args, rgb=None, scene=None, check_takeover=True, allow_sanity=False):
         command = (["agent"] + args) if self.use_agent else (self.command_base() + args)
         acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
         if not acquired:
@@ -389,10 +389,10 @@ class SylphieServer:
                 self.current_command = command
 
             ownership = self.ownership_status()
-            if not ownership.get("write_allowed"):
+            if not ownership.get("write_allowed") and not (allow_sanity and ownership.get("sanity_write_allowed")):
                 result = {
                     "ok": False,
-                    "error": "RGB writes are blocked unless Current owner is Sylphie",
+                    "error": "RGB writes are blocked unless Current owner is Sylphie Verified",
                     "ownership": ownership,
                     "command": command,
                     "exit_code": None,
@@ -528,6 +528,14 @@ class SylphieServer:
         probe = ownership_probe_snapshot()
         ownership_marker = read_ownership_marker(self.project_root)
         derived = derive_ownership_mode(capture_running, agent_status, probe, ownership_marker.get("mode", "unknown"))
+        derived.setdefault("sanity_write_allowed", False)
+        derived.setdefault("claim_available", False)
+        if derived.get("claim_available"):
+            claim_bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus_status"])
+            derived["claim_bus_status"] = claim_bus_status
+            if not claim_bus_status.get("ok"):
+                derived["claim_available"] = False
+                derived.setdefault("reasons", []).append("bus_status failed; clean ownership claim is unavailable")
         return {
             "ok": probe.get("ok", False),
             **derived,
@@ -556,6 +564,42 @@ class SylphieServer:
                 args.append("-IncludeArmouryCore")
             return self.run_elevated_lifecycle_script("takeover-for-sylphie", args, kind="ownership-takeover-for-sylphie")
         return {"ok": False, "error": "unknown ownership action"}
+
+    def claim_clean_ownership(self):
+        agent_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
+        probe = ownership_probe_snapshot()
+        details = ownership_clean_details(agent_status, probe)
+        agent_state = (agent_status.get("response") or {}).get("state") or {}
+        if not agent_status.get("ok"):
+            return 409, {"ok": False, "error": "Sylphie agent is not responding", "agent_status": agent_status, "ownership_clean": details}
+        if not bool(agent_state.get("is_elevated")):
+            return 409, {"ok": False, "error": "Sylphie agent is not elevated", "agent_status": agent_status, "ownership_clean": details}
+        if not details["clean"]:
+            return 409, {
+                "ok": False,
+                "error": "ownership is not clean",
+                "ownership_clean": details,
+                "message": "Claim clean ownership requires no tier1 blockers and no Armoury core running.",
+            }
+        bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus_status"])
+        if not bus_status.get("ok"):
+            return 409, {
+                "ok": False,
+                "error": "bus_status failed; ownership was not claimed",
+                "bus_status": bus_status,
+                "ownership_clean": details,
+            }
+        write_ownership_marker(self.project_root, "sylphie_candidate", "user claimed already-clean ownership")
+        return 200, {
+            "ok": True,
+            "mode": "sylphie_candidate",
+            "ownership_candidate": True,
+            "write_allowed": False,
+            "sanity_write_allowed": True,
+            "message": "Ownership is clean. Run direct sanity test to verify visual control.",
+            "bus_status": bus_status,
+            "ownership_clean": details,
+        }
 
     def armoury_health(self):
         return armoury_health_snapshot()
@@ -1300,6 +1344,17 @@ def write_ownership_marker(project_root, mode, reason):
         pass
 
 
+def service_running(item):
+    if not item or not item.get("exists"):
+        return False
+    state = str(item.get("state") or "").lower()
+    try:
+        pid = int(item.get("process_id") or item.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return state == "running" or pid > 0
+
+
 def takeover_last_result(payload):
     response = (payload or {}).get("response") or {}
     state = response.get("state") or {}
@@ -1311,10 +1366,35 @@ def takeover_made_changes(payload):
     stopped = result.get("stopped_services") or []
     killed = result.get("terminated_process_pids") or []
     reports = result.get("reports") or []
-    return bool(stopped or killed or reports)
+    meaningful_reports = [
+        item for item in reports
+        if "Ownership already clean; no stop actions required." not in str(item)
+    ]
+    return bool(stopped or killed or meaningful_reports)
 
 
-def mark_takeover_result(project_root, payload, include_armoury_core):
+def ownership_clean_details(agent_status, probe):
+    agent_response = agent_status.get("response") or {}
+    agent_state = agent_response.get("state") or {}
+    agent_blockers = agent_state.get("blocking_conflicts") or []
+    tier1_services = running_service_labels(probe, TIER1_SERVICE_NAMES)
+    tier2_services = running_service_labels(probe, TIER2_SERVICE_NAMES)
+    tier1_processes = blocking_owner_processes_when_agent_offline(probe)
+    tier2_processes = warning_only_armoury_processes(probe)
+    blocking = list(agent_blockers) + tier1_services + tier1_processes
+    core_running = tier2_services + tier2_processes
+    return {
+        "clean": not blocking and not core_running,
+        "blocking": blocking,
+        "tier1_services": tier1_services,
+        "tier1_processes": tier1_processes,
+        "tier2_services": tier2_services,
+        "tier2_processes": tier2_processes,
+        "core_running": core_running,
+    }
+
+
+def mark_takeover_result(project_root, payload, include_armoury_core, agent_status=None, probe=None):
     if not payload.get("ok"):
         return payload
     result = takeover_last_result(payload)
@@ -1324,10 +1404,31 @@ def mark_takeover_result(project_root, payload, include_armoury_core):
         payload["ownership_message"] = "Takeover cannot complete automatically because some blocking conflicts require manual action"
         return payload
     if not takeover_made_changes(payload):
-        write_ownership_marker(project_root, "takeover_noop", "takeover execute made no changes")
-        payload["ownership_marker_written"] = True
-        payload["ownership_mode"] = "takeover_noop"
-        payload["ownership_message"] = "Takeover made no changes. Armoury core still running. RGB writes remain blocked until full takeover or manual override."
+        details = ownership_clean_details(agent_status or {}, probe or {})
+        result["stopped_services"] = result.get("stopped_services") or []
+        result["terminated_process_pids"] = result.get("terminated_process_pids") or []
+        result["reports"] = result.get("reports") or []
+        if details["clean"]:
+            if "Ownership already clean; no stop actions required." not in result["reports"]:
+                result["reports"].append("Ownership already clean; no stop actions required.")
+            result["takeover_completeness"] = "already_clean"
+            result["ownership_candidate"] = True
+            write_ownership_marker(project_root, "sylphie_candidate", "takeover execute found ownership already clean")
+            payload["ownership_marker_written"] = True
+            payload["ownership_mode"] = "sylphie_candidate"
+            payload["ownership_candidate"] = True
+            payload["takeover_completeness"] = "already_clean"
+            payload["ownership_message"] = "No changes required; ownership already clean. Run direct sanity test to verify visual control."
+        else:
+            write_ownership_marker(project_root, "takeover_noop", "takeover execute made no changes and blockers remain")
+            payload["ownership_marker_written"] = True
+            payload["ownership_mode"] = "takeover_noop"
+            payload["takeover_completeness"] = "no_changes_blocked"
+            if details["core_running"]:
+                payload["ownership_message"] = "Takeover made no changes and Armoury core still running."
+            else:
+                payload["ownership_message"] = "Takeover made no changes and blockers remain."
+            payload["ownership_blockers_after_noop"] = details
         return payload
     mode = "sylphie_candidate" if include_armoury_core else "soft_takeover"
     write_ownership_marker(project_root, mode, "takeover execute changed ownership candidates")
@@ -1343,9 +1444,7 @@ def process_base_names(probe):
 def running_service_names(probe):
     running = set()
     for item in probe.get("services") or []:
-        if not item.get("exists"):
-            continue
-        if str(item.get("state") or "").lower() != "running":
+        if not service_running(item):
             continue
         name = str(item.get("name") or "").lower()
         display_name = str(item.get("display_name") or "").lower()
@@ -1359,9 +1458,7 @@ def running_service_names(probe):
 def running_service_labels(probe, name_set):
     labels = []
     for item in probe.get("services") or []:
-        if not item.get("exists"):
-            continue
-        if str(item.get("state") or "").lower() != "running":
+        if not service_running(item):
             continue
         name = str(item.get("name") or "")
         display_name = str(item.get("display_name") or "")
@@ -1407,7 +1504,7 @@ def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
     agent_blockers = agent_state.get("blocking_conflicts") or []
     agent_warnings = agent_state.get("warnings") or []
     lighting = probe.get("lighting_service") or {}
-    lighting_running = str(lighting.get("state") or "").lower() == "running"
+    lighting_running = service_running(lighting)
     running_services = running_service_names(probe)
     tier1_services = running_service_labels(probe, TIER1_SERVICE_NAMES)
     tier2_services = running_service_labels(probe, TIER2_SERVICE_NAMES)
@@ -1484,32 +1581,50 @@ def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
         if any("ArmouryCrate.exe" in item or "ArmouryCrate " in item for item in agent_warnings):
             reasons.append("Armoury UI is still open.")
         tier2_running = bool(tier2_services or warning_processes)
-        if marker == "takeover_noop":
+        claim_available = agent_elevated and not tier2_running and not tier1_services and not offline_blocking_processes and not agent_blockers
+        if marker == "takeover_noop" and tier2_running:
             reasons.extend([
-                "Takeover made no changes",
-                "Armoury core still running",
+                "Takeover made no changes and Armoury core still running",
                 "RGB writes remain blocked until full takeover or manual override",
             ])
             mode = "takeover-noop"
             write_allowed = False
+            sanity_write_allowed = False
+        elif marker == "takeover_noop":
+            reasons.extend([
+                "No changes required; ownership already clean.",
+                "Ownership is clean. Run direct sanity test to verify visual control.",
+            ])
+            mode = "ready-clean"
+            write_allowed = False
+            sanity_write_allowed = False
         elif tier2_running:
             mode = "soft-takeover" if marker in {"soft_takeover", "sylphie_candidate", "sylphie_verified"} else "ready-warning"
             write_allowed = False
+            sanity_write_allowed = False
         elif marker == "sylphie_verified":
             mode = "sylphie-verified"
             write_allowed = True
+            sanity_write_allowed = True
         elif marker in {"sylphie_candidate", "soft_takeover"}:
             mode = "sylphie-candidate"
-            write_allowed = True
-        else:
-            mode = "ready-warning" if agent_owner_status == "warning" else "ready"
             write_allowed = False
-        if not write_allowed and marker not in {"takeover_noop", "soft_takeover"}:
+            sanity_write_allowed = True
+            reasons.append("Ownership is clean. Run direct sanity test to verify visual control.")
+        else:
+            mode = "ready-clean" if claim_available else ("ready-warning" if agent_owner_status == "warning" else "ready")
+            write_allowed = False
+            sanity_write_allowed = False
+            if claim_available:
+                reasons.append("Ownership is clean. Claim clean ownership to start direct sanity verification.")
+        if not write_allowed and marker not in {"takeover_noop", "soft_takeover", "sylphie_candidate"}:
             reasons.append("Takeover for Sylphie has not completed in this session")
         return {
             "mode": mode,
             "reasons": reasons,
             "write_allowed": write_allowed,
+            "sanity_write_allowed": sanity_write_allowed,
+            "claim_available": claim_available,
             "blocking_conflicts": [],
             "warnings": sorted(set(agent_warnings + tier2_services + warning_processes)),
             "informational_processes": informational_processes,
@@ -1601,10 +1716,26 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {{
       name = $_.Name
       base_name = $baseName
       pid = $_.ProcessId
+      parent_pid = $_.ParentProcessId
       matched_rules = $matches
       executable_path = $_.ExecutablePath
       command_line = $_.CommandLine
     }}
+  }}
+}}
+$processGroups = @()
+$processes | Group-Object -Property base_name | ForEach-Object {{
+  $items = @($_.Group)
+  $first = $items[0]
+  $processGroups += [pscustomobject]@{{
+    base_name = $_.Name
+    name = $first.name
+    count = $items.Count
+    example_path = $first.executable_path
+    parent_pids = @($items | ForEach-Object {{ $_.parent_pid }} | Sort-Object -Unique)
+    pids_sample = @($items | ForEach-Object {{ $_.pid }} | Select-Object -First 5)
+    matched_rules = @($items | ForEach-Object {{ $_.matched_rules }} | Sort-Object -Unique)
+    is_logitech_download_assistant = ($_.Name -like "logi_download_assistant*")
   }}
 }}
 $logiStorm = @($processes | Where-Object {{ $_.base_name -like "logi_download_assistant*" }})
@@ -1614,10 +1745,11 @@ $logiStorm = @($processes | Where-Object {{ $_.base_name -like "logi_download_as
   warning = "Music mode depends on Armoury addons/audio pipeline, not only SMBus RGB."
   services = $services
   process_patterns = $processPatterns
+  process_groups = $processGroups
   processes = $processes
   logi_download_assistant_count = $logiStorm.Count
   logi_download_assistant_storm = $logiStorm.Count -gt 3
-}} | ConvertTo-Json -Depth 6
+}} | ConvertTo-Json -Depth 8
 """
     return run_powershell_json(script, 15, "Armoury health JSON parse failed", {"services": [], "processes": []})
 
@@ -1673,20 +1805,40 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {{
       name = $_.Name
       base_name = $baseName
       pid = $_.ProcessId
+      parent_pid = $_.ParentProcessId
       matched_rules = $matches
       executable_path = $_.ExecutablePath
       command_line = $_.CommandLine
     }}
   }}
 }}
+$processGroups = @()
+$processes | Group-Object -Property base_name | ForEach-Object {{
+  $items = @($_.Group)
+  $first = $items[0]
+  $processGroups += [pscustomobject]@{{
+    base_name = $_.Name
+    name = $first.name
+    count = $items.Count
+    example_path = $first.executable_path
+    parent_pids = @($items | ForEach-Object {{ $_.parent_pid }} | Sort-Object -Unique)
+    pids_sample = @($items | ForEach-Object {{ $_.pid }} | Select-Object -First 5)
+    matched_rules = @($items | ForEach-Object {{ $_.matched_rules }} | Sort-Object -Unique)
+    is_logitech_download_assistant = ($_.Name -like "logi_download_assistant*")
+  }}
+}}
+$logiStorm = @($processes | Where-Object {{ $_.base_name -like "logi_download_assistant*" }})
 [pscustomobject]@{{
   ok = $true
   captured_at = (Get-Date).ToString("o")
   warning = "Music mode depends on Armoury/audio capture pipeline, not only SMBus RGB control."
   services = $services
   process_patterns = $processPatterns
+  process_groups = $processGroups
   processes = $processes
-}} | ConvertTo-Json -Depth 6
+  logi_download_assistant_count = $logiStorm.Count
+  logi_download_assistant_storm = $logiStorm.Count -gt 3
+}} | ConvertTo-Json -Depth 8
 """
     return run_powershell_json(script, 15, "audio/reactive JSON parse failed", {"services": [], "processes": []})
 
@@ -1750,6 +1902,33 @@ try {{
     Start-Service -Name "logi_lamparray_service"
     $state = (Get-Service -Name "logi_lamparray_service").Status
     Write-SylphieAudioReactiveLog ("logi_lamparray_service status=" + $state)
+  }
+""",
+        "stop-logitech-lamparray-temporary": """
+  $svc = Get-Service -Name "logi_lamparray_service" -ErrorAction SilentlyContinue
+  if ($null -eq $svc) {
+    Write-SylphieAudioReactiveLog "logi_lamparray_service not found"
+  } else {
+    Write-SylphieAudioReactiveLog "Stopping logi_lamparray_service without changing StartupType"
+    Stop-Service -Name "logi_lamparray_service" -Force -ErrorAction SilentlyContinue
+  }
+  Get-Process -Name "logi_download_assistant*" -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-SylphieAudioReactiveLog ("Killing " + $_.ProcessName + " pid=" + $_.Id)
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+  }
+""",
+        "set-logitech-lamparray-manual": """
+  $svc = Get-Service -Name "logi_lamparray_service" -ErrorAction SilentlyContinue
+  if ($null -eq $svc) {
+    Write-SylphieAudioReactiveLog "logi_lamparray_service not found"
+  } else {
+    Write-SylphieAudioReactiveLog "Setting logi_lamparray_service StartupType=Manual and stopping it"
+    Set-Service -Name "logi_lamparray_service" -StartupType Manual
+    Stop-Service -Name "logi_lamparray_service" -Force -ErrorAction SilentlyContinue
+  }
+  Get-Process -Name "logi_download_assistant*" -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-SylphieAudioReactiveLog ("Killing " + $_.ProcessName + " pid=" + $_.Id)
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
   }
 """,
     }
@@ -1933,6 +2112,11 @@ def make_handler(server_state):
                     status, result = server_state.run_hardware_command(["scene", name], scene=name)
                 elif path == "/api/off":
                     status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off")
+                elif path == "/api/sanity/set":
+                    rgb = normalize_rgb(body.get("rgb"))
+                    status, result = server_state.run_hardware_command(["set", rgb], rgb=rgb, allow_sanity=True)
+                elif path == "/api/sanity/off":
+                    status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off", allow_sanity=True)
                 elif path == "/api/recover":
                     status, result = server_state.run_hardware_command(["recover"], check_takeover=False)
                 elif path == "/api/recover-set":
@@ -1973,7 +2157,9 @@ def make_handler(server_state):
                         "include_armoury_core": include_armoury_core,
                     }
                     result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
-                    result = mark_takeover_result(server_state.project_root, result, include_armoury_core)
+                    post_status = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
+                    post_probe = ownership_probe_snapshot()
+                    result = mark_takeover_result(server_state.project_root, result, include_armoury_core, post_status, post_probe)
                     status = 200 if result["ok"] else 500
                 elif path == "/api/agent/restore-services" or path == "/api/services/restore" or path == "/api/restore-services":
                     result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "restore_services"}, timeout_seconds=10, command=["agent", "restore_services"])
@@ -2013,12 +2199,18 @@ def make_handler(server_state):
                     write_ownership_marker(server_state.project_root, "sylphie_verified", "direct RGB sanity test visually confirmed")
                     result = {"ok": True, "mode": "sylphie_verified"}
                     status = 200
+                elif path == "/api/ownership/claim-clean":
+                    status, result = server_state.claim_clean_ownership()
                 elif path == "/api/diagnostics/audio-reactive/restart-lighting":
                     status, result = server_state.run_audio_reactive_action("restart-lighting-service")
                 elif path == "/api/diagnostics/audio-reactive/restart-windows-audio":
                     status, result = server_state.run_audio_reactive_action("restart-windows-audio")
                 elif path == "/api/diagnostics/audio-reactive/restore-logitech-lamparray":
                     status, result = server_state.run_audio_reactive_action("restore-logitech-lamparray")
+                elif path == "/api/diagnostics/audio-reactive/stop-logitech-lamparray-temporary":
+                    status, result = server_state.run_audio_reactive_action("stop-logitech-lamparray-temporary")
+                elif path == "/api/diagnostics/audio-reactive/set-logitech-lamparray-manual":
+                    status, result = server_state.run_audio_reactive_action("set-logitech-lamparray-manual")
                 elif path == "/api/diagnostics/armoury/restart-lighting":
                     result = server_state.run_armoury_action("restart-lighting")
                     status = 200 if result["ok"] else 500
@@ -2039,7 +2231,9 @@ def make_handler(server_state):
                             "include_armoury_core": include_armoury_core,
                         }
                         result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
-                        result = mark_takeover_result(server_state.project_root, result, include_armoury_core)
+                        post_status = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
+                        post_probe = ownership_probe_snapshot()
+                        result = mark_takeover_result(server_state.project_root, result, include_armoury_core, post_status, post_probe)
                     else:
                         payload = {"id": str(uuid.uuid4()), "cmd": "takeover_dry_run", "include_armoury_core": bool(body.get("include_armoury_core", False))}
                         result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])

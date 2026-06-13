@@ -138,8 +138,9 @@ The Control Center shows the current owner at the top:
 
 - `Armoury`: Armoury/LightingService owns RGB. Sylphie shows status, diagnostics, logs, and read-only capture controls, but RGB writes are blocked.
 - `Soft Takeover / Unverified`: tier1 lighting blockers are stopped, but Armoury core services or helpers are still running. RGB writes remain blocked.
-- `Sylphie Candidate`: tier1 lighting blockers and Armoury core are stopped after an explicit full takeover. RGB writes are allowed, but visual output is not verified yet.
-- `Sylphie Verified`: the user completed the red/green/blue/off direct sanity test and visually confirmed the LEDs changed.
+- `Ready Clean`: no tier1 blockers or Armoury core owners are running, but the user has not claimed Sylphie ownership yet. RGB writes are blocked.
+- `Sylphie Candidate`: clean ownership has been claimed after takeover or already-clean detection. Normal RGB writes remain blocked; only the direct sanity test is allowed.
+- `Sylphie Verified`: the user completed the red/green/blue/off direct sanity test and visually confirmed the LEDs changed. Normal RGB writes are allowed.
 - `Research`: a read-only capture probe is running. SMBus writes are blocked.
 - `Conflict` / `Unknown`: ownership is ambiguous. SMBus writes are blocked until the user resolves ownership.
 
@@ -177,7 +178,7 @@ python tools\analyze_capture.py research\captures\armoury_ui_YYYYMMDD_HHMMSS_mas
 
 ## Controller Ownership and Recovery
 
-Do not run Sylphie hardware writes while Armoury Crate, Aura, OpenRGB, or `LightingService` owns the controller. The local API checks `/api/ownership/status` before `set`, `scene`, `off`, and recovery writes. If the current owner is not `Sylphie Candidate` or `Sylphie Verified`, the API returns HTTP 409 and does not write SMBus.
+Do not run Sylphie hardware writes while Armoury Crate, Aura, OpenRGB, or `LightingService` owns the controller. The local API checks `/api/ownership/status` before `set`, `scene`, `off`, and recovery writes. Normal RGB writes require `Sylphie Verified`; `Sylphie Candidate` only allows the direct sanity test path.
 
 Useful checks:
 
@@ -204,7 +205,7 @@ Takeover is an explicit, reversible operation for cases where ASUS/Aura/OpenRGB 
 
 From the Control Center, prefer `Takeover for Sylphie`. The soft flow stops only tier1 lighting blockers: `LightingService`, `Aura Wallpaper Service`, `AuraWallpaperService.exe`, `ArmourySocketServer.exe`, `ArmourySwAgent.exe`, `ArmouryHtmlDebugServer.exe`, `OpenRGB`, and `OpenAuraSDK`. It leaves Armoury core services such as `ArmouryCrateService`, legacy `ArmouryCrate.Service`, and `asComSvc` running, so RGB writes remain blocked as `Soft Takeover / Unverified`.
 
-Full takeover requires the explicit `Close Armoury UI/helpers during takeover` checkbox. It can stop Armoury core services (`ArmouryCrateService`, legacy `ArmouryCrate.Service`, `asComSvc`) and close whitelisted helpers, but it never stops `AsusCertService`, `asus`, `asusm`, or `AsusROGLSLService`, and it does not change service `StartupType`. RGB controls unlock only after ownership resolves to `Sylphie Candidate`; `Sylphie Verified` requires the direct RGB sanity test.
+Full takeover requires the explicit `Close Armoury UI/helpers during takeover` checkbox. It can stop Armoury core services (`ArmouryCrateService`, legacy `ArmouryCrate.Service`, `asComSvc`) and close whitelisted helpers, but it never stops `AsusCertService`, `asus`, `asusm`, or `AsusROGLSLService`, and it does not change service `StartupType`. Direct sanity unlocks at `Sylphie Candidate`; normal RGB controls unlock only after `Sylphie Verified`.
 
 Read-only check:
 

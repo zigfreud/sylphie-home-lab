@@ -47,14 +47,29 @@ try {
     }
     $stoppedCount = @($takeoverState.stopped_services).Count
     $terminatedCount = @($takeoverState.terminated_process_pids).Count
-    $ownershipMode = if (($stoppedCount + $terminatedCount) -eq 0) {
+
+    $tier1Services = @("LightingService", "Aura Wallpaper Service")
+    $tier2Services = @("ArmouryCrateService", "ArmouryCrate.Service", "asComSvc")
+    $tier1Processes = @("LightingService", "AuraWallpaperService", "ArmourySocketServer", "ArmourySwAgent", "ArmouryHtmlDebugServer", "OpenRGB", "OpenAuraSDK")
+    $tier2Processes = @("ArmouryCrate", "ArmouryCrate.Service", "ArmouryCrate.UserSessionHelper", "asus_framework")
+    $runningTier1Services = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { ($tier1Services -contains $_.Name -or $tier1Services -contains $_.DisplayName) -and ($_.State -eq "Running" -or $_.ProcessId -gt 0) })
+    $runningTier2Services = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { ($tier2Services -contains $_.Name -or $tier2Services -contains $_.DisplayName) -and ($_.State -eq "Running" -or $_.ProcessId -gt 0) })
+    $runningTier1Processes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $tier1Processes -contains $_.ProcessName })
+    $runningTier2Processes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $tier2Processes -contains $_.ProcessName })
+    $ownershipAlreadyClean = ($runningTier1Services.Count + $runningTier2Services.Count + $runningTier1Processes.Count + $runningTier2Processes.Count) -eq 0
+
+    $ownershipMode = if (($stoppedCount + $terminatedCount) -eq 0 -and $ownershipAlreadyClean) {
+        "sylphie_candidate"
+    } elseif (($stoppedCount + $terminatedCount) -eq 0) {
         "takeover_noop"
     } elseif ($IncludeArmouryCore) {
         "sylphie_candidate"
     } else {
         "soft_takeover"
     }
-    $ownershipReason = if ($ownershipMode -eq "takeover_noop") {
+    $ownershipReason = if (($stoppedCount + $terminatedCount) -eq 0 -and $ownershipAlreadyClean) {
+        "takeover-for-sylphie found ownership already clean"
+    } elseif ($ownershipMode -eq "takeover_noop") {
         "takeover-for-sylphie made no changes"
     } elseif ($ownershipMode -eq "sylphie_candidate") {
         "full takeover completed; visual sanity test still required for verified mode"
@@ -70,12 +85,18 @@ try {
         include_armoury_core = [bool]$IncludeArmouryCore
         stopped_services = $stoppedCount
         terminated_process_pids = $terminatedCount
+        ownership_already_clean = $ownershipAlreadyClean
         updated_at = (Get-Date).ToString("o")
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stateDir "ownership_mode.json") -Encoding UTF8
 
-    if ($ownershipMode -eq "takeover_noop") {
+    if (($stoppedCount + $terminatedCount) -eq 0 -and $ownershipAlreadyClean) {
+        Write-OwnershipLog "No changes required; ownership already clean."
+        Write-OwnershipLog "Ownership is clean. Run direct sanity test to verify visual control."
+    } elseif ($ownershipMode -eq "takeover_noop") {
         Write-OwnershipLog "Takeover made no changes"
-        Write-OwnershipLog "Armoury core still running"
+        if (($runningTier2Services.Count + $runningTier2Processes.Count) -gt 0) {
+            Write-OwnershipLog "Armoury core still running"
+        }
         Write-OwnershipLog "RGB writes remain blocked until full takeover or manual override"
     }
     Write-OwnershipLog ("takeover-for-sylphie completed mode=" + $ownershipMode)

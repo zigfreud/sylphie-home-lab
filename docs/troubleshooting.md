@@ -103,12 +103,17 @@ The Control Center reports these ownership modes:
 
 - `Armoury`: Armoury/LightingService owns RGB. Sylphie can show diagnostics, status, logs, and read-only captures, but RGB writes are blocked.
 - `Soft Takeover / Unverified`: tier1 lighting blockers are stopped, but Armoury core services/helpers are still running. RGB writes are blocked.
-- `Sylphie Candidate`: full takeover stopped tier1 lighting blockers and Armoury core; RGB writes are allowed, but visual output is still unverified.
-- `Sylphie Verified`: the red/green/blue/off direct sanity test was visually confirmed by the user.
+- `Ready Clean`: tier1 blockers and Armoury core are stopped, but Sylphie ownership has not been claimed. RGB writes are blocked.
+- `Sylphie Candidate`: clean ownership was claimed after takeover or already-clean detection. Normal RGB writes remain blocked; direct sanity test is allowed.
+- `Sylphie Verified`: the red/green/blue/off direct sanity test was visually confirmed by the user, enabling normal RGB writes.
 - `Research`: a read-only capture probe is running. SMBus writes are blocked.
 - `Conflict` / `Unknown`: more than one owner is possible, or no owner is clear. RGB writes are blocked until resolved.
 
 Armoury updates may leave multiple Armoury service generations present. Treat `ArmouryCrateService`, legacy `ArmouryCrate.Service`, and `asComSvc` as tier2 Armoury core. They are warnings during soft takeover and are stopped only by full takeover with the explicit `Close Armoury UI/helpers during takeover` checkbox. `AsusCertService` is never stopped by default; `asus`, `asusm`, and `AsusROGLSLService` are ignored update/download services by default.
+
+If takeover execute makes no changes while tier1 and tier2 owners are already stopped, treat the environment as already clean, not as a failed no-op. Use `Claim clean ownership`, then run the direct sanity test. Do not show `Armoury core still running` unless a tier2 service is actually `Running`/has a PID or a tier2 helper process exists.
+
+Logitech Download Assistant process storms are external diagnostic noise. They do not affect Armoury/Sylphie ownership. Use `Stop Logitech LampArray temporarily` to stop `logi_lamparray_service` and kill `logi_download_assistant*` without changing `StartupType`; use `Set Logitech LampArray to Manual` only as an explicit advanced action.
 
 ## Return To Armoury Flow
 

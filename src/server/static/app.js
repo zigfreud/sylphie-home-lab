@@ -70,6 +70,8 @@ let busy = false;
 let lastRequestedRgb = "FF0000";
 let currentOwnerMode = "unknown";
 let currentWriteAllowed = false;
+let currentSanityWriteAllowed = false;
+let currentClaimAvailable = false;
 
 function activePanelName() {
   return document.querySelector(".tab-panel.active")?.id || "lights";
@@ -88,7 +90,15 @@ function setBusy(value, text = "Running...") {
 function applyOwnerGuards() {
   document.querySelectorAll("[data-owner-required='sylphie']").forEach((item) => {
     item.disabled = busy || !currentWriteAllowed;
-    item.title = currentWriteAllowed ? "" : "RGB writes are enabled only after Takeover for Sylphie completes without blocking conflicts.";
+    item.title = currentWriteAllowed ? "" : "RGB writes are enabled only after Sylphie Verified.";
+  });
+  document.querySelectorAll("[data-owner-required='sanity']").forEach((item) => {
+    item.disabled = busy || !currentSanityWriteAllowed;
+    item.title = currentSanityWriteAllowed ? "" : "Direct sanity test is enabled after clean ownership is claimed.";
+  });
+  document.querySelectorAll("[data-action='claimCleanOwnership']").forEach((item) => {
+    item.disabled = busy || !currentClaimAvailable;
+    item.title = currentClaimAvailable ? "" : "Claim requires elevated agent, clean ownership, and no Armoury core running.";
   });
   colorInput.disabled = busy || !currentWriteAllowed;
 }
@@ -99,6 +109,12 @@ function pretty(payload) {
 
 function trimPayload(payload) {
   if (!payload || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) {
+    if (payload.length > 60) {
+      return [...payload.slice(0, 60).map(trimPayload), `... ${payload.length - 60} more items ...`];
+    }
+    return payload.map(trimPayload);
+  }
   const copy = Array.isArray(payload) ? payload.map(trimPayload) : {...payload};
   for (const key of ["stdout", "stderr", "text", "raw", "command_line", "executable_path"]) {
     if (typeof copy[key] === "string" && copy[key].length > 2500) {
@@ -140,7 +156,7 @@ function updateConflictAlert(payload) {
   }
   if (payload?.ownership_mode === "takeover_noop" || payload?.mode === "takeover-noop" || payload?.ownership_message) {
     conflictAlert.hidden = false;
-    conflictAlert.textContent = payload.ownership_message || "Takeover made no changes. Armoury core still running. RGB writes remain blocked until full takeover or manual override.";
+    conflictAlert.textContent = payload.ownership_message || "Takeover made no changes and blockers remain.";
     return;
   }
   if ((blockers && blockers.length) || payload?.error === "controller conflict detected") {
@@ -197,6 +213,8 @@ function updateOwnershipBanner(payload) {
   if (!payload || !("mode" in payload)) return;
   currentOwnerMode = payload.mode || "unknown";
   currentWriteAllowed = Boolean(payload.write_allowed);
+  currentSanityWriteAllowed = Boolean(payload.sanity_write_allowed);
+  currentClaimAvailable = Boolean(payload.claim_available);
   const label = {
     armoury: "Armoury",
     sylphie: "Sylphie",
@@ -206,6 +224,7 @@ function updateOwnershipBanner(payload) {
     "sylphie-verified": "Sylphie Verified",
     "takeover-noop": "Takeover No-op",
     ready: "Ready",
+    "ready-clean": "Ready Clean",
     "ready-warning": "Ready Warning",
     research: "Research",
     conflict: "Conflict",
@@ -218,6 +237,8 @@ function updateOwnershipBanner(payload) {
   if (payload.informational_processes?.length) parts.push(`Informational processes: ${payload.informational_processes.join(", ")}`);
   if (payload.reasons?.length) parts.push(payload.reasons.join(" | "));
   parts.push(`RGB writes: ${payload.write_allowed ? "enabled" : "blocked"}`);
+  if (payload.sanity_write_allowed) parts.push("Direct sanity test: enabled");
+  if (payload.claim_available) parts.push("Claim clean ownership: available");
   ownerReasons.textContent = parts.join(" | ") || "No ownership details loaded.";
   ownerBanner.className = `owner-banner owner-${currentOwnerMode}`;
   applyOwnerGuards();
@@ -246,9 +267,16 @@ function updateServices(payload) {
 }
 
 function updateAudioReactiveHealth(payload) {
-  const services = payload?.services;
-  const processes = payload?.processes;
-  if (!Array.isArray(services) && !Array.isArray(processes)) return;
+  const hasAudioPayload = payload && (
+    "services" in payload ||
+    "processes" in payload ||
+    "process_groups" in payload ||
+    "logi_download_assistant_count" in payload
+  );
+  if (!hasAudioPayload) return;
+  const services = asArray(payload?.services);
+  const processes = asArray(payload?.processes);
+  const groups = asArray(payload?.process_groups);
 
   if (Array.isArray(services) && audioServiceTable) {
     audioServiceTable.innerHTML = `
@@ -268,26 +296,80 @@ function updateAudioReactiveHealth(payload) {
       </table>`;
   }
 
-  if (Array.isArray(processes) && audioProcessTable) {
-    if (processes.length === 0) {
+  if (audioProcessTable) {
+    const processGroups = groups.length ? groups : groupProcesses(processes);
+    if (processGroups.length === 0) {
       audioProcessTable.innerHTML = `<div class="empty-state">No related processes found.</div>`;
       return;
     }
+    const stormAlert = payload.logi_download_assistant_storm
+      ? `<div class="conflict-alert">Logitech Download Assistant process storm detected. Count: ${escapeHtml(String(payload.logi_download_assistant_count || 0))}</div>`
+      : "";
     audioProcessTable.innerHTML = `
+      ${stormAlert}
       <table>
-        <thead><tr><th>Name</th><th>PID</th><th>Matched</th><th>Command Line</th></tr></thead>
+        <thead><tr><th>Name</th><th>Count</th><th>PID sample</th><th>Parent PIDs</th><th>Matched</th><th>Example Path</th></tr></thead>
         <tbody>
-          ${processes.map((process) => `
+          ${processGroups.map((group) => `
             <tr>
-              <td>${escapeHtml(process.name || "")}</td>
-              <td>${escapeHtml(String(process.pid || ""))}</td>
-              <td>${escapeHtml((process.matched_rules || []).join(", "))}</td>
-              <td>${escapeHtml(process.command_line || process.executable_path || "")}</td>
+              <td>${escapeHtml(group.base_name || group.name || "")}</td>
+              <td>${escapeHtml(String(group.count || 0))}</td>
+              <td>${escapeHtml((group.pids_sample || []).join(", "))}</td>
+              <td>${escapeHtml((group.parent_pids || []).join(", "))}</td>
+              <td>${escapeHtml((group.matched_rules || []).join(", "))}</td>
+              <td>${escapeHtml(group.example_path || "")}</td>
             </tr>
           `).join("")}
         </tbody>
-      </table>`;
+      </table>
+      <details>
+        <summary>Show all related processes</summary>
+        <table>
+          <thead><tr><th>Name</th><th>PID</th><th>Parent PID</th><th>Matched</th><th>Command Line</th></tr></thead>
+          <tbody>
+            ${(processes || []).map((process) => `
+              <tr>
+                <td>${escapeHtml(process.name || "")}</td>
+                <td>${escapeHtml(String(process.pid || ""))}</td>
+                <td>${escapeHtml(String(process.parent_pid || ""))}</td>
+                <td>${escapeHtml((process.matched_rules || []).join(", "))}</td>
+                <td>${escapeHtml(process.command_line || process.executable_path || "")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </details>`;
   }
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return [value];
+  return [];
+}
+
+function groupProcesses(processes) {
+  const map = new Map();
+  processes.forEach((process) => {
+    const key = process.base_name || process.name || "unknown";
+    const group = map.get(key) || {
+      base_name: key,
+      name: process.name,
+      count: 0,
+      example_path: process.executable_path || "",
+      parent_pids: [],
+      pids_sample: [],
+      matched_rules: [],
+    };
+    group.count += 1;
+    if (group.pids_sample.length < 5 && process.pid) group.pids_sample.push(process.pid);
+    if (process.parent_pid && !group.parent_pids.includes(process.parent_pid)) group.parent_pids.push(process.parent_pid);
+    (process.matched_rules || []).forEach((rule) => {
+      if (!group.matched_rules.includes(rule)) group.matched_rules.push(rule);
+    });
+    map.set(key, group);
+  });
+  return Array.from(map.values()).sort((a, b) => b.count - a.count);
 }
 
 function updateCaptureSummary(payload) {
@@ -297,7 +379,7 @@ function updateCaptureSummary(payload) {
 }
 
 function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
 async function request(path, options = {}) {
@@ -448,7 +530,7 @@ async function directSanityTest() {
     ["off", "000000"],
   ];
   for (const [label, rgb] of steps) {
-    const payload = label === "off" ? await post("/api/off", {}) : await post("/api/set", {rgb});
+    const payload = label === "off" ? await post("/api/sanity/off", {}) : await post("/api/sanity/set", {rgb});
     show("lights", payload);
     if (!payload.ok || !payload.bus_write_ok) {
       statusText.textContent = "Direct sanity test stopped: SMBus write failed.";
@@ -484,6 +566,11 @@ const actions = {
     const accepted = window.confirm(message);
     if (!accepted) return;
     return run("takeover", "Taking over for Sylphie...", () => post("/api/ownership/takeover-for-sylphie", {include_armoury_core: includeArmouryCore})).then(() => setTimeout(refreshOwnership, 5000));
+  },
+  claimCleanOwnership: () => {
+    const accepted = window.confirm("Claim clean ownership now? No services will be stopped and no SMBus writes will be sent.");
+    if (!accepted) return;
+    return run("takeover", "Claiming clean ownership...", () => post("/api/ownership/claim-clean", {})).then(() => setTimeout(refreshOwnership, 1000));
   },
   goCapture: () => selectTab("capture"),
   emergencyStopSylphie: () => {
@@ -552,6 +639,14 @@ const actions = {
   restoreLogitechLampArray: () => {
     if (!window.confirm("Restore logi_lamparray_service now? This sets it to Automatic and starts it if present.")) return;
     return run("diagnostics", "Requesting Logitech LampArray restore...", () => post("/api/diagnostics/armoury/restore-logitech-lamparray", {}));
+  },
+  stopLogitechLampArrayTemporary: () => {
+    if (!window.confirm("Stop Logitech LampArray temporarily and kill logi_download_assistant processes? StartupType will not be changed.")) return;
+    return run("diagnostics", "Stopping Logitech LampArray temporarily...", () => post("/api/diagnostics/audio-reactive/stop-logitech-lamparray-temporary", {}));
+  },
+  setLogitechLampArrayManual: () => {
+    if (!window.confirm("Advanced action: set logi_lamparray_service StartupType=Manual, stop it, and kill logi_download_assistant processes?")) return;
+    return run("diagnostics", "Setting Logitech LampArray to Manual...", () => post("/api/diagnostics/audio-reactive/set-logitech-lamparray-manual", {}));
   },
   busStatus: () => run("recovery", "Reading bus status...", () => post("/api/agent/bus-status")),
   recover: () => run("recovery", "Recovering...", () => post("/api/agent/recover")),

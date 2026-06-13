@@ -10,6 +10,7 @@ Local API/dashboard stability:
 - Dashboard is local-first and binds to `127.0.0.1` by default.
 - Controller ownership checks run before API writes.
 - Armoury/Sylphie coexistence distinguishes soft takeover, Sylphie Candidate, and Sylphie Verified via direct visual sanity test.
+- Already-clean ownership is claimable without stop actions; Logitech process storms are grouped as external diagnostics noise.
 - Conservative software recovery is available through the CLI and dashboard.
 
 ## Next Phases

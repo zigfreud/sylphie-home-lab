@@ -41,6 +41,7 @@
         <div class="toolbar">
           <button data-action="returnToArmoury" type="button">Return to Armoury</button>
           <button data-action="takeoverForSylphie" class="danger" type="button">Takeover for Sylphie</button>
+          <button data-action="claimCleanOwnership" type="button">Claim clean ownership</button>
           <button data-action="goCapture" type="button">Start capture</button>
           <button data-action="emergencyStopSylphie" class="danger" type="button">Emergency stop Sylphie</button>
         </div>
@@ -61,7 +62,7 @@
           <input id="colorInput" type="color" value="#ff0000" aria-label="RGB color">
           <button data-action="setColor" data-owner-required="sylphie" type="button">Set color</button>
           <button data-action="off" data-owner-required="sylphie" type="button">Off</button>
-          <button data-action="directSanityTest" data-owner-required="sylphie" type="button">Direct RGB sanity test</button>
+          <button data-action="directSanityTest" data-owner-required="sanity" type="button">Direct RGB sanity test</button>
           <span id="lastRgb">Last RGB: unknown</span>
         </div>
         <div id="sceneButtons" class="button-grid"></div>
@@ -110,6 +111,8 @@
           <button data-action="restartArmouryStack" class="danger" type="button">Restart Armoury stack</button>
           <button data-action="restartWindowsAudioServices" class="danger" type="button">Restart Windows Audio services</button>
           <button data-action="restoreLogitechLampArray" type="button">Restore Logitech LampArray service</button>
+          <button data-action="stopLogitechLampArrayTemporary" type="button">Stop Logitech LampArray temporarily</button>
+          <button data-action="setLogitechLampArrayManual" class="danger" type="button">Set Logitech LampArray to Manual</button>
         </div>
         <div class="diagnostic-grid">
           <div>
