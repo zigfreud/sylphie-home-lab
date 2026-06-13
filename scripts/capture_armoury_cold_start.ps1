@@ -5,6 +5,8 @@ param(
     [int]$PostStartObserveSeconds = 60,
     [int]$StackStopSettleSeconds = 3,
     [switch]$NoPayloadCapture,
+    [switch]$NoHighRate,
+    [switch]$PriorityHigh,
     [switch]$NonInteractive
 )
 
@@ -309,6 +311,12 @@ Read-Continue "Close dashboard/browser tabs if needed, then press Enter to start
 $probeArgs = @("--base", "0B20", "--output", $MasterLog, "--segment-logs", "--duration-seconds", [string]$CaptureSeconds)
 if (-not $NoPayloadCapture) {
     $probeArgs += "--capture-block-payload"
+}
+if (-not $NoHighRate) {
+    $probeArgs += @("--high-rate", "--focus-addr", "40", "--focus-registers", "8000,8020,80A0,80F1,8022,8023")
+}
+if ($PriorityHigh) {
+    $probeArgs += "--priority-high"
 }
 $ProbeProcess = Start-Process -FilePath $Probe -ArgumentList $probeArgs -WorkingDirectory $Root -PassThru -WindowStyle Hidden
 @{

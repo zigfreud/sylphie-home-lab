@@ -17,8 +17,12 @@ Local API/dashboard stability:
 2. LAN/mobile access with token-based access control
 3. Home Assistant integration
 4. Alexa integration
-5. Audio reactive mode
+5. Native Sylphie audio reactive mode using WASAPI loopback
 6. Fire TV / media mode
+
+## Future Issues
+
+- Implement native Sylphie audio reactive mode using WASAPI loopback, independent of Armoury's audio capture pipeline.
 
 ## Deferred
 

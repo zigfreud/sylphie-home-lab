@@ -2,7 +2,9 @@ param(
     [string]$Base = "0B20",
     [string]$Output,
     [switch]$NoSegmentLogs,
-    [switch]$NoPayloadCapture
+    [switch]$NoPayloadCapture,
+    [switch]$NoHighRate,
+    [switch]$PriorityHigh
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +48,12 @@ if (-not $NoPayloadCapture) {
 }
 if (-not $NoSegmentLogs) {
     $argsList += "--segment-logs"
+}
+if (-not $NoHighRate) {
+    $argsList += @("--high-rate", "--focus-addr", "40", "--focus-registers", "8000,8020,80A0,80F1,8022,8023")
+}
+if ($PriorityHigh) {
+    $argsList += "--priority-high"
 }
 
 & $exe @argsList

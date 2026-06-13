@@ -1,5 +1,6 @@
 param(
-    [string]$TaskName = "SylphieAgent"
+    [string]$TaskName = "SylphieAgent",
+    [switch]$EnableAutostart
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,8 +50,15 @@ Register-ScheduledTask `
     -Description "Sylphie Home Lab elevated hardware agent" `
     -Force | Out-Null
 
+if ($EnableAutostart) {
+    Enable-ScheduledTask -TaskName $TaskName | Out-Null
+} else {
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+}
+
 Write-Host "Installed Scheduled Task: $TaskName"
 Write-Host "Run level: highest privileges"
+Write-Host ("Autostart: {0}" -f ($(if ($EnableAutostart) { "enabled" } else { "disabled" })))
 Write-Host "User: $user"
 Write-Host "Executable: $ExePath"
 Write-Host "Working directory: $ProjectRoot"

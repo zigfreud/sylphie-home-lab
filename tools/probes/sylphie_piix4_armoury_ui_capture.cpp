@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -43,6 +44,12 @@ struct Options {
     bool decode = true;
     uint32_t interval_ms = 1;
     uint32_t duration_seconds = 0;
+    bool high_rate = false;
+    bool priority_high = false;
+    bool focus_addr_valid = false;
+    uint8_t focus_addr = 0x40;
+    std::set<uint16_t> focus_registers;
+    size_t ring_buffer_size = 256;
 };
 
 struct Snapshot {
@@ -131,6 +138,19 @@ std::string hex_plain(uint8_t value) {
     return out.str();
 }
 
+std::string join_registers(const std::set<uint16_t>& values) {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto value : values) {
+        if (!first) {
+            out << ",";
+        }
+        first = false;
+        out << hex4(value);
+    }
+    return out.str();
+}
+
 uint16_t parse_hex16(std::string value) {
     if (value.rfind("0x", 0) == 0 || value.rfind("0X", 0) == 0) {
         value = value.substr(2);
@@ -141,12 +161,33 @@ uint16_t parse_hex16(std::string value) {
     return static_cast<uint16_t>(std::stoul(value, nullptr, 16) & 0xFFFF);
 }
 
+uint8_t parse_hex8(std::string value) {
+    return static_cast<uint8_t>(parse_hex16(value) & 0xFF);
+}
+
 uint8_t parse_u8(const std::string& value) {
     const unsigned long parsed = std::stoul(value, nullptr, 10);
     if (parsed > 255) {
         throw std::runtime_error("value out of range: " + value);
     }
     return static_cast<uint8_t>(parsed);
+}
+
+std::set<uint16_t> parse_register_list(const std::string& value) {
+    std::set<uint16_t> registers;
+    size_t start = 0;
+    while (start < value.size()) {
+        const size_t comma = value.find(',', start);
+        const std::string item = value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!item.empty()) {
+            registers.insert(parse_hex16(item));
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return registers;
 }
 
 std::string timestamp_now() {
@@ -180,6 +221,10 @@ void print_help() {
         << "  --segment-logs             Start a segment log on each marker key\n"
         << "  --no-decode                Disable Aura event decoder\n"
         << "  --duration-seconds N       Stop automatically after N seconds\n"
+        << "  --high-rate                Reduce polling delay and dump ring buffer around focus events\n"
+        << "  --priority-high            Raise process/thread priority while capturing\n"
+        << "  --focus-addr HEX           Address that triggers focused context dumps, default 40\n"
+        << "  --focus-registers LIST     Comma list of registers that trigger context dumps\n"
         << "  --help                     Show this help\n\n"
         << "Marker keys:\n"
         << "  1 SERVICE_STOPPED\n"
@@ -248,12 +293,43 @@ Options parse_args(int argc, char** argv) {
             options.duration_seconds = static_cast<uint32_t>(std::stoul(argv[++i]));
             continue;
         }
+        if (arg == "--high-rate") {
+            options.high_rate = true;
+            options.interval_ms = 0;
+            options.ring_buffer_size = 512;
+            options.focus_addr_valid = true;
+            options.focus_addr = 0x40;
+            continue;
+        }
+        if (arg == "--priority-high") {
+            options.priority_high = true;
+            continue;
+        }
+        if (arg == "--focus-addr" && i + 1 < argc) {
+            options.focus_addr = parse_hex8(argv[++i]);
+            options.focus_addr_valid = true;
+            continue;
+        }
+        if (arg == "--focus-registers" && i + 1 < argc) {
+            options.focus_registers = parse_register_list(argv[++i]);
+            continue;
+        }
+        if (arg == "--ring-buffer-size" && i + 1 < argc) {
+            options.ring_buffer_size = static_cast<size_t>(std::stoul(argv[++i]));
+            if (options.ring_buffer_size < 16) {
+                options.ring_buffer_size = 16;
+            }
+            continue;
+        }
         if (!arg.empty() && arg[0] != '-' && !consumed_positional_base) {
             options.base = parse_hex16(arg);
             consumed_positional_base = true;
             continue;
         }
         throw std::runtime_error("unknown argument: " + arg);
+    }
+    if (options.high_rate && options.focus_registers.empty()) {
+        options.focus_registers = {0x8000, 0x8020, 0x80A0, 0x80F1, 0x8022, 0x8023};
     }
     return options;
 }
@@ -454,6 +530,15 @@ private:
     std::string current_segment_;
 };
 
+void raise_capture_priority(Logger& log) {
+    if (!SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)) {
+        log.write("WARNING: SetPriorityClass(HIGH_PRIORITY_CLASS) failed: " + windows_error_message(GetLastError()));
+    }
+    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+        log.write("WARNING: SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: " + windows_error_message(GetLastError()));
+    }
+}
+
 std::string raw_line(const Snapshot& s, uint64_t tick, const std::vector<std::string>& changes) {
     std::ostringstream line;
     line << timestamp_now()
@@ -489,6 +574,66 @@ bool is_d1_hint(uint8_t value) {
 
 std::string register_text(bool valid, uint16_t value) {
     return valid ? hex4(value) : std::string("unknown");
+}
+
+std::string recent_selects_text(const std::deque<std::string>& recent_selects) {
+    if (recent_selects.empty()) {
+        return "[]";
+    }
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < recent_selects.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << recent_selects[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+void remember_select(std::deque<std::string>& recent_selects, uint16_t reg) {
+    recent_selects.push_back(hex4(reg));
+    while (recent_selects.size() > 8) {
+        recent_selects.pop_front();
+    }
+}
+
+bool should_dump_ring(
+    const Snapshot& s,
+    const Options& options,
+    bool selected_register_valid,
+    uint16_t selected_register) {
+    if (!options.high_rate) {
+        return false;
+    }
+    if (options.focus_addr_valid && addr7(s.addr_raw) != options.focus_addr) {
+        return false;
+    }
+    if (addr7(s.addr_raw) != 0x40 || (s.addr_raw & 0x01) != 0) {
+        return false;
+    }
+    if (s.cmd == 0x03) {
+        return true;
+    }
+    if (s.cmd == 0x00) {
+        const uint16_t reg = static_cast<uint16_t>((static_cast<uint16_t>(s.d0) << 8) | s.d1);
+        return reg == 0x8000 || options.focus_registers.find(reg) != options.focus_registers.end();
+    }
+    if (selected_register_valid && options.focus_registers.find(selected_register) != options.focus_registers.end()) {
+        return true;
+    }
+    return false;
+}
+
+void dump_ring(Logger& log, const std::deque<std::string>& ring, const std::string& reason) {
+    if (ring.empty()) {
+        return;
+    }
+    log.write("  RING_PRE_DUMP reason=" + reason + " count=" + std::to_string(ring.size()));
+    for (const auto& item : ring) {
+        log.write("  RING_PRE " + item);
+    }
 }
 
 CapturedPayload maybe_capture_block_payload(const ReadOnlyPorts& ports, const Snapshot& s, const Options& options) {
@@ -539,6 +684,7 @@ void decode_aura(
     const Snapshot& s,
     uint16_t& selected_register,
     bool& selected_register_valid,
+    std::deque<std::string>& recent_selects,
     const CapturedPayload& captured_payload) {
     if (addr7(s.addr_raw) != 0x40) {
         return;
@@ -562,6 +708,7 @@ void decode_aura(
         selected_register = static_cast<uint16_t>((static_cast<uint16_t>(s.d0) << 8) | s.d1);
         selected_register_valid = true;
         summary.selected_registers.insert(hex4(selected_register));
+        remember_select(recent_selects, selected_register);
         log.write("  AURA select_register " + hex4(selected_register));
         return;
     }
@@ -598,7 +745,8 @@ void decode_aura(
         ++summary.block_writes_by_register[reg];
         std::ostringstream line;
         line << "  AURA block_write last_selected_register=" << reg
-             << " len=" << static_cast<int>(s.d0);
+             << " len=" << static_cast<int>(s.d0)
+             << " recent_selects=" << recent_selects_text(recent_selects);
         if (!captured_payload.bytes.empty() || captured_payload.has_extra) {
             const std::string payload = payload_reads_text(captured_payload);
             line << " " << payload;
@@ -649,6 +797,9 @@ int main(int argc, char** argv) {
         ReadOnlyPorts ports(options.base);
         Logger log(options);
         Summary summary;
+        if (options.priority_high) {
+            raise_capture_priority(log);
+        }
 
         log.write("=== sylphie_piix4_armoury_ui_capture start ===");
         log.write("base=" + hex4(options.base) + " output=" + options.output_path);
@@ -658,14 +809,25 @@ int main(int argc, char** argv) {
         log.write(std::string("segment_logs=") + (options.segment_logs ? "true" : "false"));
         log.write(std::string("decode=") + (options.decode ? "true" : "false"));
         log.write("duration_seconds=" + std::to_string(options.duration_seconds));
+        log.write(std::string("high_rate=") + (options.high_rate ? "true" : "false"));
+        log.write(std::string("priority_high=") + (options.priority_high ? "true" : "false"));
+        log.write("interval_ms=" + std::to_string(options.interval_ms));
+        log.write("ring_buffer_size=" + std::to_string(options.ring_buffer_size));
+        log.write("focus_addr=" + std::string(options.focus_addr_valid ? hex2(options.focus_addr) : "none"));
+        log.write("focus_registers=" + (options.focus_registers.empty() ? std::string("none") : join_registers(options.focus_registers)));
         if (options.capture_block_payload) {
             log.write("WARNING: --capture-block-payload reads +0x07 only for ADDR=0x40 W CMD=0x03 D0=1..payload_max_len; this is experimental/invasive.");
+        }
+        if (options.high_rate) {
+            log.write("high_rate mode: sleeps are minimized, a ring buffer is dumped around CMD=0x03 and focus-register events, and +0x07 is still read only on eligible block writes.");
         }
         log.write("keys: 1 SERVICE_STOPPED, 2 SERVICE_STARTED, 3 FIRST_LIGHT, m MOUSE_COLOR_SELECTED, o OK_CLICKED, a APPLY_CLICKED, w WHITE_SELECTED, r RED_SELECTED, g GREEN_SELECTED, b BLUE_SELECTED, f FIXED_MODE_SELECTED, e EFFECT_MODE_SELECTED, x OTHER, q QUIT");
 
         Snapshot previous = read_snapshot(ports);
         uint16_t selected_register = 0;
         bool selected_register_valid = false;
+        std::deque<std::string> recent_selects;
+        std::deque<std::string> ring;
 
         log.write(raw_line(previous, GetTickCount64(), {"initial"}));
 
@@ -701,9 +863,20 @@ int main(int argc, char** argv) {
                 ++summary.raw_events;
                 ++summary.segment_events[log.current_segment()];
                 const CapturedPayload payload = maybe_capture_block_payload(ports, current, options);
-                log.write(raw_line(current, GetTickCount64(), changes));
+                const std::string line = raw_line(current, GetTickCount64(), changes);
+                if (should_dump_ring(current, options, selected_register_valid, selected_register)) {
+                    const std::string reason =
+                        current.cmd == 0x03 ? "block_write" :
+                        (current.cmd == 0x00 ? "select_focus_register" : "focus_register_context");
+                    dump_ring(log, ring, reason);
+                }
+                log.write(line);
                 if (options.decode) {
-                    decode_aura(log, summary, current, selected_register, selected_register_valid, payload);
+                    decode_aura(log, summary, current, selected_register, selected_register_valid, recent_selects, payload);
+                }
+                ring.push_back(line);
+                while (ring.size() > options.ring_buffer_size) {
+                    ring.pop_front();
                 }
                 previous = current;
             }

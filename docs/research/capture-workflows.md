@@ -27,6 +27,21 @@ Use the Control Center `Capture Lab` tab when possible. It starts probes with fi
 7. Apply red/white from Armoury and mark the color.
 8. Stop capture.
 
+If the Armoury/Aura stack was already stopped before the capture began, use the Control Center mode `Stack already stopped, start capture now`. This records `STACK_ALREADY_STOPPED_AT_CAPTURE_START` and writes a service/process snapshot at `CAPTURE_START`. In that mode, absence of `SERVICE_STOPPED` is expected and should not be treated as operator error.
+
+Recommended panel sequence for this mode:
+
+1. Stop the Armoury/Aura stack manually.
+2. Open `Capture Lab`.
+3. Select `Stack already stopped, start capture now`.
+4. Keep `High-rate ring buffer` enabled.
+5. Start `Armoury UI capture`.
+6. Click `Start LightingService / Launch Armoury`.
+7. Mark `FIRST_LIGHT` when the LEDs return.
+8. Apply `WHITE` and `RED` in Armoury and mark each action.
+9. Stop capture.
+10. Run `Analyze latest capture`.
+
 ## Full Armoury Cold-Start Workflow
 
 Use this workflow to capture the rearm sequence that may include `0x8000` block writes.
@@ -63,6 +78,61 @@ Inspect the summary for:
 - `block_write last_selected_register=0x8000 len=3`;
 - payload reads from that block write;
 - writes around `0x8000`, `0x80A0`, `0x80F1`, `0x8023`, and `0x8022`.
+
+## High-Rate / Ring Buffer Capture
+
+The Armoury UI probe supports:
+
+```powershell
+bin\sylphie_piix4_armoury_ui_capture.exe --base 0B20 --capture-block-payload --high-rate --priority-high --focus-addr 40 --focus-registers 8000,8020,80A0,80F1,8022,8023 --output research\captures\manual_master.log
+```
+
+`--high-rate` minimizes sleep time and keeps a ring buffer of recent snapshots. When the probe sees a block write or a focus register such as `0x8000`, it dumps the preceding snapshots into the log. This helps diagnose short Armoury bursts that may otherwise be missed.
+
+The probe still does not read `SMBBLKDAT/+0x07` continuously. With `--capture-block-payload`, it reads `+0x07` only for eligible `ADDR=0x40 W CMD=0x03` block write events.
+
+## Capture Analyzer
+
+Use the Control Center `Analyze latest capture` button, or run:
+
+```powershell
+python tools\analyze_capture.py research\captures\armoury_ui_YYYYMMDD_HHMMSS_master.log
+```
+
+The analyzer reports selected registers, block writes, captured payloads, marker timeline, and whether `0x8000 len=3` was observed and had payload bytes captured.
+
+## RED_STUCK_TO_GREEN_CAPTURE Workflow
+
+Use this when the LEDs are visually stuck red and Armoury can change them to green. The goal is to capture only the transition that unsticks the controller.
+
+Panel flow:
+
+1. Open `Capture Lab`.
+2. Keep `High-rate ring buffer` enabled.
+3. Click `Capture stuck color transition`.
+4. Click marker `RED_STUCK_STATE`.
+5. In Armoury, select green in the color picker.
+6. Click marker `COLOR_PICKER_CHANGED_GREEN`.
+7. When the LEDs actually change, click marker `COLOR_VISUALLY_CHANGED`.
+8. Click OK in the Armoury popup.
+9. Click marker `POPUP_OK_CLICKED`.
+10. Stop capture.
+11. Click `Analyze latest capture`.
+
+The analyzer reports:
+
+- block writes between `RED_STUCK_STATE` and `COLOR_VISUALLY_CHANGED`;
+- selected register and payload for each block write in that window;
+- byte writes to `0x80F1`, `0x8020`, `0x8023`, and `0x80A0` in that same window.
+
+This workflow is read-only from Sylphie's side. Armoury is the actor changing the LEDs.
+Do not force an `APPLY_CLICKED` marker for this workflow. On this Armoury UI, selecting the color can change the LEDs before OK; OK may only close or commit the popup.
+
+When comparing captures, treat these as different flows:
+
+- `SERVICE_STOPPED` present: capture included a stop operation after the probe started.
+- `STACK_ALREADY_STOPPED_AT_CAPTURE_START` present: stack was already stopped before capture, so missing `SERVICE_STOPPED` is normal.
+- no stop markers: manual research mode, interpret only against user notes and action markers.
 
 ## Static Color Workflow
 

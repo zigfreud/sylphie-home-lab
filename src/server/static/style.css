@@ -104,6 +104,90 @@ p {
   flex-wrap: wrap;
 }
 
+.owner-banner {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.owner-banner strong,
+.owner-banner span {
+  display: block;
+}
+
+.owner-banner span {
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.owner-banner .toolbar {
+  grid-column: 1 / -1;
+}
+
+.owner-options {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.check-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.owner-sylphie {
+  border-color: rgba(129, 217, 154, 0.65);
+}
+
+.owner-armoury,
+.owner-research {
+  border-color: rgba(88, 196, 220, 0.65);
+}
+
+.owner-conflict {
+  border-color: rgba(255, 107, 107, 0.85);
+}
+
+.capture-options {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) repeat(2, minmax(220px, auto));
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.capture-options label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.capture-options .check-row {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+}
+
+.capture-options input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
 #statusText,
 #lastRgb {
   color: var(--muted);
@@ -177,6 +261,13 @@ input[type="color"] {
   margin: 14px 0;
 }
 
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+
 .summary-grid div {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -200,6 +291,18 @@ input[type="color"] {
   margin-top: 12px;
 }
 
+.muted {
+  color: var(--muted);
+}
+
+.empty-state {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #15181d;
+  color: var(--muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -212,6 +315,7 @@ td {
   padding: 9px 8px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 th {
@@ -235,9 +339,17 @@ pre {
 @media (max-width: 700px) {
   .topbar,
   .status-actions,
-  .toolbar {
+  .toolbar,
+  .owner-banner,
+  .owner-options,
+  .capture-options {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .owner-banner,
+  .capture-options {
+    display: flex;
   }
 
   input[type="color"] {

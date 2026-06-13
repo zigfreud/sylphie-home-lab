@@ -16,6 +16,7 @@ const markers = [
   "SERVICE_STOPPED",
   "SERVICE_STARTED",
   "STACK_STOPPED",
+  "STACK_ALREADY_STOPPED_AT_CAPTURE_START",
   "ARMOURY_LAUNCHED",
   "UAC_ACCEPTED_BY_USER",
   "FIRST_LIGHT",
@@ -26,6 +27,12 @@ const markers = [
   "RED",
   "GREEN",
   "BLUE",
+  "RED_STUCK_STATE",
+  "COLOR_PICKER_CHANGED_RED",
+  "COLOR_PICKER_CHANGED_GREEN",
+  "COLOR_PICKER_CHANGED_BLUE",
+  "COLOR_VISUALLY_CHANGED",
+  "POPUP_OK_CLICKED",
   "OTHER",
 ];
 
@@ -33,21 +40,34 @@ const statusText = document.getElementById("statusText");
 const colorInput = document.getElementById("colorInput");
 const lastRgb = document.getElementById("lastRgb");
 const coldStartMode = document.getElementById("coldStartMode");
+const captureMode = document.getElementById("captureMode");
+const stackAlreadyStopped = document.getElementById("stackAlreadyStopped");
+const highRateCapture = document.getElementById("highRateCapture");
+const captureModeHint = document.getElementById("captureModeHint");
 const conflictAlert = document.getElementById("conflictAlert");
+const ownerBanner = document.getElementById("ownerBanner");
+const ownerText = document.getElementById("ownerText");
+const ownerReasons = document.getElementById("ownerReasons");
+const returnDisableAutostart = document.getElementById("returnDisableAutostart");
+const returnLaunchArmoury = document.getElementById("returnLaunchArmoury");
 const results = {
   lights: document.getElementById("lightsResult"),
   agent: document.getElementById("agentResult"),
   takeover: document.getElementById("takeoverResult"),
+  diagnostics: document.getElementById("diagnosticsResult"),
   recovery: document.getElementById("recoveryResult"),
   capture: document.getElementById("captureTail"),
   logs: document.getElementById("logsResult"),
 };
 const agentSummary = document.getElementById("agentSummary");
 const serviceTable = document.getElementById("serviceTable");
+const audioServiceTable = document.getElementById("audioServiceTable");
+const audioProcessTable = document.getElementById("audioProcessTable");
 const captureSummary = document.getElementById("captureSummary");
 
 let busy = false;
 let lastRequestedRgb = "FF0000";
+let currentOwnerMode = "unknown";
 
 function activePanelName() {
   return document.querySelector(".tab-panel.active")?.id || "lights";
@@ -59,6 +79,17 @@ function setBusy(value, text = "Running...") {
   document.querySelectorAll("button[data-action]").forEach((button) => {
     button.disabled = value;
   });
+  colorInput.disabled = value || currentOwnerMode !== "sylphie";
+  if (!value) applyOwnerGuards();
+}
+
+function applyOwnerGuards() {
+  const writesAllowed = currentOwnerMode === "sylphie";
+  document.querySelectorAll("[data-owner-required='sylphie']").forEach((item) => {
+    item.disabled = busy || !writesAllowed;
+    item.title = writesAllowed ? "" : "RGB writes are enabled only in Sylphie Mode.";
+  });
+  colorInput.disabled = busy || !writesAllowed;
 }
 
 function pretty(payload) {
@@ -68,7 +99,7 @@ function pretty(payload) {
 function trimPayload(payload) {
   if (!payload || typeof payload !== "object") return payload;
   const copy = Array.isArray(payload) ? payload.map(trimPayload) : {...payload};
-  for (const key of ["stdout", "stderr", "text", "raw"]) {
+  for (const key of ["stdout", "stderr", "text", "raw", "command_line", "executable_path"]) {
     if (typeof copy[key] === "string" && copy[key].length > 2500) {
       copy[key] = `${copy[key].slice(0, 2500)}\n... truncated ...`;
     }
@@ -84,6 +115,9 @@ function show(panel, payload) {
   updateConflictAlert(payload);
   updateAgentSummary(payload);
   updateServices(payload);
+  updateAudioReactiveHealth(payload);
+  updateOwnershipBanner(payload);
+  updateAgentTaskSummary(payload);
   updateCaptureSummary(payload);
 }
 
@@ -121,7 +155,37 @@ function updateAgentSummary(payload) {
   agentSummary.innerHTML = items.map(([label, value]) => `<div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div>`).join("");
 }
 
+function updateAgentTaskSummary(payload) {
+  if (!("task_exists" in (payload || {}))) return;
+  const items = [
+    ["Task exists", String(payload.task_exists)],
+    ["Task enabled", String(payload.task_enabled)],
+    ["Task state", payload.task_state || "unknown"],
+    ["Agent running", String(payload.running)],
+    ["PID", (payload.pids || []).join(", ") || "none"],
+    ["Elevated", String(payload.elevated)],
+  ];
+  agentSummary.innerHTML = items.map(([label, value]) => `<div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div>`).join("");
+}
+
+function updateOwnershipBanner(payload) {
+  if (!payload || !("mode" in payload)) return;
+  currentOwnerMode = payload.mode || "unknown";
+  const label = {
+    armoury: "Armoury",
+    sylphie: "Sylphie",
+    research: "Research",
+    conflict: "Conflict",
+    unknown: "Unknown",
+  }[currentOwnerMode] || currentOwnerMode;
+  ownerText.textContent = label;
+  ownerReasons.textContent = (payload.reasons || []).join(" | ") || "No ownership details loaded.";
+  ownerBanner.className = `owner-banner owner-${currentOwnerMode}`;
+  applyOwnerGuards();
+}
+
 function updateServices(payload) {
+  if (payload?.process_patterns) return;
   const services = payload?.response?.state?.last_result?.services || payload?.response?.services || payload?.services;
   if (!Array.isArray(services)) return;
   serviceTable.innerHTML = `
@@ -141,9 +205,55 @@ function updateServices(payload) {
     </table>`;
 }
 
+function updateAudioReactiveHealth(payload) {
+  const services = payload?.services;
+  const processes = payload?.processes;
+  if (!Array.isArray(services) && !Array.isArray(processes)) return;
+
+  if (Array.isArray(services) && audioServiceTable) {
+    audioServiceTable.innerHTML = `
+      <table>
+        <thead><tr><th>Name</th><th>State</th><th>Startup</th><th>PID</th><th>Account</th></tr></thead>
+        <tbody>
+          ${services.map((svc) => `
+            <tr>
+              <td>${escapeHtml(svc.name || "")}${svc.optional ? " <span class=\"muted\">optional</span>" : ""}</td>
+              <td>${escapeHtml(svc.state || "unknown")}</td>
+              <td>${escapeHtml(svc.start_mode || "")}</td>
+              <td>${escapeHtml(String(svc.process_id || ""))}</td>
+              <td>${escapeHtml(svc.account || "")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>`;
+  }
+
+  if (Array.isArray(processes) && audioProcessTable) {
+    if (processes.length === 0) {
+      audioProcessTable.innerHTML = `<div class="empty-state">No related processes found.</div>`;
+      return;
+    }
+    audioProcessTable.innerHTML = `
+      <table>
+        <thead><tr><th>Name</th><th>PID</th><th>Matched</th><th>Command Line</th></tr></thead>
+        <tbody>
+          ${processes.map((process) => `
+            <tr>
+              <td>${escapeHtml(process.name || "")}</td>
+              <td>${escapeHtml(String(process.pid || ""))}</td>
+              <td>${escapeHtml((process.matched_rules || []).join(", "))}</td>
+              <td>${escapeHtml(process.command_line || process.executable_path || "")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>`;
+  }
+}
+
 function updateCaptureSummary(payload) {
   if (!("running" in (payload || {})) && !payload?.log && !payload?.marker_log) return;
-  captureSummary.textContent = `Capture running: ${payload.running} | type: ${payload.type || "none"} | log: ${payload.log || "none"}`;
+  const alreadyStopped = payload.stack_already_stopped ? " | stack already stopped mode" : "";
+  captureSummary.textContent = `Capture running: ${payload.running} | type: ${payload.type || "none"} | log: ${payload.log || "none"}${alreadyStopped}`;
 }
 
 function escapeHtml(value) {
@@ -202,10 +312,27 @@ function buildSceneButtons() {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.action = `scene:${scene}`;
+    button.dataset.ownerRequired = "sylphie";
     button.textContent = scene;
     button.addEventListener("click", () => setScene(scene));
     root.appendChild(button);
   });
+}
+
+function selectTab(name) {
+  const button = document.querySelector(`.tab-button[data-tab="${name}"]`);
+  const panel = document.getElementById(name);
+  if (!button || !panel) return;
+  document.querySelectorAll(".tab-button").forEach((item) => item.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
+  button.classList.add("active");
+  panel.classList.add("active");
+}
+
+async function refreshOwnership() {
+  const payload = await request("/api/ownership/status");
+  updateOwnershipBanner(payload);
+  return payload;
 }
 
 function buildMarkerButtons() {
@@ -221,6 +348,43 @@ function buildMarkerButtons() {
   });
 }
 
+function captureStartPayload(type) {
+  const alreadyStopped = Boolean(stackAlreadyStopped?.checked || captureMode?.value === "stack-already-stopped");
+  return {
+    type,
+    capture_block_payload: true,
+    stack_already_stopped: alreadyStopped,
+    high_rate: Boolean(highRateCapture?.checked),
+    priority_high: Boolean(highRateCapture?.checked),
+  };
+}
+
+function redStuckGreenCapturePayload() {
+  return {
+    type: "armoury-ui",
+    capture_block_payload: true,
+    stack_already_stopped: Boolean(stackAlreadyStopped?.checked || captureMode?.value === "stack-already-stopped"),
+    high_rate: true,
+    priority_high: true,
+    scenario: "RED_STUCK_TO_GREEN_CAPTURE",
+  };
+}
+
+function updateCaptureModeHint() {
+  const mode = captureMode?.value || "full-automated";
+  if (mode === "stack-already-stopped") {
+    if (stackAlreadyStopped) stackAlreadyStopped.checked = true;
+    captureModeHint.textContent = "Use this only if LightingService and Armoury/Aura processes are already stopped. Capture start records STACK_ALREADY_STOPPED_AT_CAPTURE_START and a service/process snapshot.";
+    return;
+  }
+  if (mode === "manual-research") {
+    captureModeHint.textContent = "Manual research mode starts the probe and leaves stack control to you. Add markers while performing Armoury actions.";
+    return;
+  }
+  if (stackAlreadyStopped) stackAlreadyStopped.checked = false;
+  captureModeHint.textContent = "Full automated stop/start launches the elevated cold-start workflow. It stops LightingService first, then whitelisted leftovers.";
+}
+
 async function setScene(name) {
   if (sceneRgb[name]) {
     lastRequestedRgb = sceneRgb[name];
@@ -234,6 +398,26 @@ async function setScene(name) {
 
 const actions = {
   health: () => run(activePanelName(), "Checking...", () => request("/api/health")),
+  ownershipStatus: () => run(activePanelName(), "Checking owner...", () => request("/api/ownership/status")),
+  returnToArmoury: () => {
+    const accepted = window.confirm("Return to Armoury Mode now? Sylphie agent will be stopped and no SMBus writes will be sent.");
+    if (!accepted) return;
+    return run("agent", "Returning to Armoury...", () => post("/api/ownership/return-to-armoury", {
+      disable_autostart: Boolean(returnDisableAutostart?.checked),
+      launch_armoury: Boolean(returnLaunchArmoury?.checked),
+    })).then(() => setTimeout(refreshOwnership, 3000));
+  },
+  takeoverForSylphie: () => {
+    const accepted = window.confirm("Take over for Sylphie Mode now? Armoury/Aura lighting services will be stopped first.");
+    if (!accepted) return;
+    return run("takeover", "Taking over for Sylphie...", () => post("/api/ownership/takeover-for-sylphie", {})).then(() => setTimeout(refreshOwnership, 3000));
+  },
+  goCapture: () => selectTab("capture"),
+  emergencyStopSylphie: () => {
+    const accepted = window.confirm("Emergency stop Sylphie agent now?");
+    if (!accepted) return;
+    return run("agent", "Stopping Sylphie...", () => post("/api/agent/task/stop", {})).then(() => setTimeout(refreshOwnership, 2000));
+  },
   setColor: () => {
     const rgb = colorInput.value.replace("#", "").toUpperCase();
     lastRequestedRgb = rgb;
@@ -243,9 +427,29 @@ const actions = {
   off: () => setScene("off"),
   agentPing: () => run("agent", "Pinging agent...", () => post("/api/agent/ping")),
   agentStatus: () => run("agent", "Loading agent status...", () => request("/api/agent/status")),
-  startAgent: () => run("agent", "Starting agent...", () => post("/api/lifecycle/start-agent")),
-  stopAgent: () => run("agent", "Stopping agent...", () => post("/api/lifecycle/stop-agent")),
-  restartAgent: () => run("agent", "Restarting agent...", () => post("/api/lifecycle/restart-agent")),
+  agentTaskStatus: () => run("agent", "Loading task status...", () => request("/api/agent/task/status")),
+  installAgentTask: () => {
+    const accepted = window.confirm("Install SylphieAgent Scheduled Task disabled by default?");
+    if (!accepted) return;
+    return run("agent", "Installing task...", () => post("/api/agent/task/install", {enable_autostart: false})).then(() => setTimeout(() => actions.agentTaskStatus(), 2500));
+  },
+  enableAgentAutostart: () => {
+    const accepted = window.confirm("Enable Sylphie agent autostart at logon?");
+    if (!accepted) return;
+    return run("agent", "Enabling autostart...", () => post("/api/agent/task/enable-autostart", {})).then(() => setTimeout(() => actions.agentTaskStatus(), 2500));
+  },
+  disableAgentAutostart: () => run("agent", "Disabling autostart...", () => post("/api/agent/task/disable-autostart", {})).then(() => setTimeout(() => actions.agentTaskStatus(), 2500)),
+  uninstallAgentTask: () => {
+    const accepted = window.confirm("Uninstall SylphieAgent Scheduled Task? If it is running from the task, the agent will be stopped.");
+    if (!accepted) return;
+    return run("agent", "Uninstalling task...", () => post("/api/agent/task/uninstall", {stop_agent: true})).then(() => setTimeout(() => actions.agentTaskStatus(), 2500));
+  },
+  startAgentNow: () => {
+    const accepted = window.confirm("Start Sylphie agent manually now without enabling autostart?");
+    if (!accepted) return;
+    return run("agent", "Starting agent now...", () => post("/api/agent/task/start-now", {})).then(() => setTimeout(refreshOwnership, 2500));
+  },
+  stopAgentTask: () => run("agent", "Stopping agent...", () => post("/api/agent/task/stop", {})).then(() => setTimeout(refreshOwnership, 2000)),
   serviceStatus: () => run("takeover", "Loading services...", () => request("/api/services/status")),
   takeoverCheck: () => run("takeover", "Checking takeover...", () => post("/api/agent/takeover-check")),
   takeoverDryRun: () => run("takeover", "Planning takeover...", () => post("/api/agent/takeover-dry-run", {})),
@@ -254,6 +458,24 @@ const actions = {
     return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {i_accept_stopping_lighting_services: true}));
   },
   restoreServices: () => run("takeover", "Restoring services...", () => post("/api/agent/restore-services")),
+  armouryHealth: () => run("diagnostics", "Checking Armoury health...", () => request("/api/diagnostics/armoury-health")),
+  audioReactiveHealth: () => run("diagnostics", "Checking audio/reactive health...", () => request("/api/diagnostics/audio-reactive-health")),
+  restartLightingService: () => {
+    if (!window.confirm("Restart LightingService now? This can temporarily hand RGB control back to Armoury/Aura.")) return;
+    return run("diagnostics", "Requesting LightingService restart...", () => post("/api/diagnostics/armoury/restart-lighting", {}));
+  },
+  restartArmouryStack: () => {
+    if (!window.confirm("Restart Armoury stack now? LightingService will be restarted and Armoury launched if a known path exists.")) return;
+    return run("diagnostics", "Requesting Armoury stack restart...", () => post("/api/diagnostics/armoury/restart-stack", {}));
+  },
+  restartWindowsAudioServices: () => {
+    if (!window.confirm("Restart Windows Audio services now? Audio playback/capture may briefly drop.")) return;
+    return run("diagnostics", "Requesting audio service restart...", () => post("/api/diagnostics/audio-reactive/restart-windows-audio", {}));
+  },
+  restoreLogitechLampArray: () => {
+    if (!window.confirm("Restore logi_lamparray_service now? This sets it to Automatic and starts it if present.")) return;
+    return run("diagnostics", "Requesting Logitech LampArray restore...", () => post("/api/diagnostics/armoury/restore-logitech-lamparray", {}));
+  },
   busStatus: () => run("recovery", "Reading bus status...", () => post("/api/agent/bus-status")),
   recover: () => run("recovery", "Recovering...", () => post("/api/agent/recover")),
   recoverWhite: () => run("recovery", "Recovering white...", () => post("/api/agent/recover-set", {rgb: "FFFFFF"})),
@@ -261,16 +483,24 @@ const actions = {
   recoverLast: () => run("recovery", "Recovering last color...", () => post("/api/agent/recover-set", {rgb: lastRequestedRgb || "FFFFFF"})),
   experimentalArmouryFe: () => run("recovery", "Experimental command unavailable...", async () => ({ok: false, error: "Not wired yet. Use CLI experimental command manually for now."})),
   experimentalClearMode: () => run("recovery", "Experimental command unavailable...", async () => ({ok: false, error: "Not wired yet. Use CLI experimental command manually for now."})),
-  startBroadCapture: () => run("capture", "Starting broad capture...", () => post("/api/capture/start", {type: "broad", capture_block_payload: true})),
-  startArmouryCapture: () => run("capture", "Starting Armoury UI capture...", () => post("/api/capture/start", {type: "armoury-ui", capture_block_payload: true})),
+  startBroadCapture: () => run("capture", "Starting broad capture...", () => post("/api/capture/start", captureStartPayload("broad"))),
+  startArmouryCapture: () => run("capture", "Starting Armoury UI capture...", () => post("/api/capture/start", captureStartPayload("armoury-ui"))),
+  startRedStuckGreenCapture: () => run("capture", "Starting RED_STUCK_TO_GREEN capture...", () => post("/api/capture/start", redStuckGreenCapturePayload())),
   startColdStartCapture: () => {
     const accepted = window.confirm("This launches an elevated cold-start capture and may stop the Sylphie server/dashboard. Continue?");
     if (!accepted) return;
     const mode = coldStartMode ? coldStartMode.value : "gui-cold-launch";
     return run("capture", "Launching cold-start capture...", () => post("/api/capture/cold-start", {mode}));
   },
+  startArmouryStack: () => {
+    const accepted = window.confirm("Start LightingService or launch Armoury now? Add FIRST_LIGHT marker manually when LEDs return.");
+    if (!accepted) return;
+    const mode = coldStartMode ? coldStartMode.value : "gui-cold-launch";
+    return run("capture", "Starting Armoury stack...", () => post("/api/capture/start-stack", {mode}));
+  },
   stopCapture: () => run("capture", "Stopping capture...", () => post("/api/capture/stop")),
   captureStatus: () => run("capture", "Loading capture status...", () => request("/api/capture/status")),
+  analyzeCapture: () => run("capture", "Analyzing capture...", () => post("/api/capture/analyze", {})),
   tailServerLog: () => run("logs", "Loading server log...", () => request("/api/logs/tail?name=server&lines=200")),
   tailAgentLog: () => run("logs", "Loading agent log...", () => request("/api/logs/tail?name=agent&lines=200")),
   tailCommandsLog: () => run("logs", "Loading command log...", () => request("/api/logs/tail?name=commands&lines=200")),
@@ -292,8 +522,15 @@ colorInput.addEventListener("input", () => {
   lastRgb.textContent = `Last RGB: ${lastRequestedRgb} (preview)`;
 });
 
+if (captureMode) {
+  captureMode.addEventListener("change", updateCaptureModeHint);
+  updateCaptureModeHint();
+}
+
 wireTabs();
 buildSceneButtons();
 buildMarkerButtons();
 wireActions();
-actions.agentStatus();
+applyOwnerGuards();
+refreshOwnership();
+actions.agentTaskStatus();

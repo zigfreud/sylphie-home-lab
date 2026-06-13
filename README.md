@@ -134,30 +134,48 @@ Open:
 http://127.0.0.1:8765/
 ```
 
+The Control Center shows the current owner at the top:
+
+- `Armoury`: Armoury/LightingService owns RGB. Sylphie shows status, diagnostics, logs, and read-only capture controls, but RGB writes are blocked.
+- `Sylphie`: `sylphie_agent.exe` owns RGB. Armoury/LightingService should be stopped, and RGB writes are allowed.
+- `Research`: a read-only capture probe is running. SMBus writes are blocked.
+- `Conflict` / `Unknown`: ownership is ambiguous. SMBus writes are blocked until the user resolves ownership.
+
 The Control Center has these tabs:
 
 - `Lights`: scenes, color picker, off, last RGB, and last command result.
-- `Agent`: ping/status plus start, stop, and restart actions for the Scheduled Task agent.
+- `Agent`: ping/status plus Scheduled Task status, install, enable/disable autostart, uninstall, start-now, and stop actions.
 - `Armoury Takeover`: service/process status, takeover dry-run, explicit takeover execute, and restore services.
+- `Diagnostics`: Armoury Health and Audio/Reactive Health for LightingService, Armoury addons/processes, Windows Audio, Logitech LampArray, and related process storms.
 - `Recovery`: bus-status, recover, recover-set white/red/last color, and placeholders for experimental recovery flows.
 - `Capture Lab`: start broad capture, start Armoury UI capture, launch full Armoury cold-start capture, stop capture, sidecar markers, and capture log tail.
 - `Logs`: safe tail views for `logs/server.log`, `logs/agent.log`, `logs/commands.jsonl`, and the current capture log.
 
-The HTTP server is not elevated. Privileged hardware and ownership operations go through `sylphie_agent.exe` over the local named pipe. If the agent is not running, the UI shows agent errors and the user should run:
+The HTTP server is not elevated. Privileged hardware and ownership operations go through `sylphie_agent.exe` or fixed whitelisted scripts. The server exposes only fixed endpoints and whitelisted scripts. It does not accept arbitrary commands, paths, or shell input. For debug-only CLI fallback, start the server with `SYLPHIE_USE_AGENT=0`.
+
+The Scheduled Task for `sylphie_agent.exe` is opt-in for autostart. Installing the task creates it disabled by default unless the user explicitly enables autostart from the Control Center or passes the explicit flag in PowerShell. To start the agent manually without enabling autostart:
 
 ```powershell
-.\scripts\start_agent.ps1
+.\scripts\start_agent_now.ps1
 ```
-
-The server exposes only fixed endpoints and whitelisted scripts. It does not accept arbitrary commands, paths, or shell input. For debug-only CLI fallback, start the server with `SYLPHIE_USE_AGENT=0`.
 
 Capture Lab starts only whitelisted local probe executables from `bin\`. Markers are written through the dashboard into a sidecar marker log under `research/captures/`, so capture workflows do not require typing probe commands by hand.
 
 Full Armoury cold-start capture is different: it intentionally stops the Sylphie server/agent, stops `LightingService` first, kills only whitelisted leftover Armoury/Aura/OpenRGB processes, launches Armoury or starts `LightingService`, and writes a sanitized summary under `docs/research/`. Because it must stop services, it runs in a separate elevated PowerShell window and the dashboard may disconnect during the workflow.
 
+Capture Lab also supports a `Stack already stopped, start capture now` mode. Use it when you manually stopped `LightingService` and Armoury/Aura processes before starting capture. The marker log records `STACK_ALREADY_STOPPED_AT_CAPTURE_START` plus a service/process snapshot, so absence of `SERVICE_STOPPED` is not treated as a bad capture in that mode.
+
+For short Armoury rearm bursts, keep `High-rate ring buffer` enabled. The Armoury UI probe then runs with `--high-rate --priority-high --focus-addr 40 --focus-registers 8000,8020,80A0,80F1,8022,8023` and dumps the preceding ring buffer around block writes and focus-register events. It still reads `SMBBLKDAT/+0x07` only on eligible block writes when payload capture is enabled.
+
+Analyze captures from the panel with `Analyze latest capture`, or from PowerShell:
+
+```powershell
+python tools\analyze_capture.py research\captures\armoury_ui_YYYYMMDD_HHMMSS_master.log
+```
+
 ## Controller Ownership and Recovery
 
-Do not run Sylphie hardware writes while Armoury Crate, Aura, OpenRGB, or `LightingService` owns the controller. The local API runs `takeover-check` before `set`, `scene`, and `off`; if a known controller process is detected, the API returns HTTP 409 and does not write.
+Do not run Sylphie hardware writes while Armoury Crate, Aura, OpenRGB, or `LightingService` owns the controller. The local API checks `/api/ownership/status` before `set`, `scene`, `off`, and recovery writes. If the current owner is not `Sylphie`, the API returns HTTP 409 and does not write SMBus.
 
 Useful checks:
 
@@ -181,6 +199,8 @@ The recovery command only toggles the confirmed direct-mode path and writes dire
 ## Taking Ownership From Armoury/Aura
 
 Takeover is an explicit, reversible operation for cases where ASUS/Aura/OpenRGB processes keep reclaiming the RGB controller.
+
+From the Control Center, prefer `Takeover for Sylphie`. The flow stops `LightingService` first, waits for service release, terminates only whitelisted Armoury/Aura leftovers, leaves `AsusCertService` alone by default, does not change service `StartupType`, starts the Sylphie agent manually, and then runs read-only health checks. RGB controls unlock only after ownership resolves to `Sylphie`.
 
 Read-only check:
 
@@ -216,6 +236,8 @@ Takeover only stops whitelisted services/processes. It does not uninstall softwa
 
 Armoury/Aura may stop controlling RGB until `restore-services` runs or the machine reboots. The dashboard exposes takeover as explicit buttons; it never runs takeover automatically.
 
+Use `Return to Armoury` when repairing Armoury, restoring addons, or using Music mode. The flow stops the Sylphie agent, optionally disables Sylphie autostart, restores services recorded in `.sylphie/takeover_state.json`, starts `LightingService`, and launches Armoury if a known path exists. It does not write SMBus.
+
 ## Hardware Agent
 
 `sylphie_agent.exe` is the persistent elevated hardware owner prototype. It listens on the local named pipe `\\.\pipe\sylphie-hw`, serializes hardware writes, performs privileged ownership/recovery operations, and calls the native SMBus/Aura layer directly. The HTTP server should remain non-elevated.
@@ -238,12 +260,18 @@ Scheduled Task setup:
 
 ```powershell
 .\scripts\install_agent_task.ps1
-.\scripts\start_agent.ps1
+.\scripts\start_agent_now.ps1
 .\scripts\status_agent.ps1
 .\scripts\stop_agent.ps1
 ```
 
-The task is named `SylphieAgent`, starts at user logon, and runs with highest privileges. The agent writes logs to:
+The task is named `SylphieAgent` and runs with highest privileges. It is created disabled by default. Autostart at user logon is enabled only by explicit user action:
+
+```powershell
+.\scripts\install_agent_task.ps1 -EnableAutostart
+```
+
+The agent writes logs to:
 
 ```text
 logs/agent.log

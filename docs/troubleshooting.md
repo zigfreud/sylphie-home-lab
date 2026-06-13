@@ -73,6 +73,69 @@ bin\sylphie_rgb.exe takeover --execute --i-accept-stopping-lighting-services
 
 Use `--include-armoury-core` only when the Tier 1 takeover is not enough.
 
+## Armoury Music Mode Does Not React
+
+If static, breathing, color cycle, or other Armoury lighting modes still work but Music does not, treat this as an audio/reactive pipeline failure. The RGB engine and header path can still be healthy while Armoury's audio capture path is broken.
+
+Use `Diagnostics` -> `Audio/Reactive Health` in the Control Center to inspect:
+
+- `Audiosrv`
+- `AudioEndpointBuilder`
+- `LightingService`
+- `logi_lamparray_service`, when present
+- Armoury, ASUS framework, Realtek, Nahimic, Sonic, Audio, Logitech, and LGHUB related processes
+
+Do not investigate this first as an RGB header or SMBus failure. Music mode depends on Armoury/audio capture pipeline, not only SMBus RGB control.
+
+The diagnostic view does not stop anything automatically. Its restart/restore actions require explicit confirmation:
+
+- `Restart LightingService`
+- `Restart Windows Audio services`
+- `Restore Logitech LampArray service`
+
+If Music mode only works again after reinstalling or restoring Armoury addons, keep the machine in Armoury Mode while repairing Armoury. Do not run Sylphie agent autostart during Armoury repair, because an elevated agent can reclaim ownership before Armoury's addon/audio pipeline has stabilized.
+
+Music mode works only when Armoury addons and the audio capture pipeline are healthy. Do not treat a working static/breathing/color-cycle mode plus broken Music mode as an RGB header failure.
+
+## Ownership Modes
+
+The Control Center reports one of four ownership modes:
+
+- `Armoury`: Armoury/LightingService owns RGB. Sylphie can show diagnostics, status, logs, and read-only captures, but RGB writes are blocked.
+- `Sylphie`: `sylphie_agent.exe` owns RGB. Armoury/LightingService should be stopped, and RGB writes are allowed.
+- `Research`: a read-only capture probe is running. SMBus writes are blocked.
+- `Conflict` / `Unknown`: more than one owner is possible, or no owner is clear. RGB writes are blocked until resolved.
+
+## Return To Armoury Flow
+
+Use `Return to Armoury` after repairing Armoury, reinstalling addons, restoring Music mode, or deciding to give control back to ASUS software.
+
+The flow:
+
+- stops the Sylphie agent;
+- optionally disables Sylphie autostart;
+- restores services recorded in `.sylphie/takeover_state.json`;
+- starts `LightingService`;
+- launches Armoury if a known path exists;
+- does not write SMBus.
+
+The HTTP server remains non-elevated. Privileged work is launched through whitelisted scripts.
+
+## Takeover For Sylphie Flow
+
+Use `Takeover for Sylphie` only when you explicitly want Sylphie Mode.
+
+The flow:
+
+- stops `LightingService` first;
+- waits for service release;
+- terminates only whitelisted Armoury/Aura leftovers;
+- does not stop `AsusCertService` by default;
+- does not change service `StartupType`;
+- starts the Sylphie agent manually, not through autostart;
+- runs read-only doctor/bus-status checks;
+- unlocks RGB controls only after ownership resolves to `Sylphie`.
+
 ## Armoury-Lite Recover
 
 `recover-armoury-lite` is experimental. Use it only when the controller appears stuck/off, the confirmed direct RGB path is still unchanged, and normal `recover` did not rearm output.
@@ -154,6 +217,10 @@ Privileged work belongs to `sylphie_agent.exe`, which runs elevated as a Schedul
 
 The Control Center `Capture Lab` can start broad or Armoury UI capture probes and records marker clicks in a sidecar marker log. The probes remain read-only: they use `Inp32`, never call `Out32`, and only read `SMBBLKDAT/+0x07` on block-write events when payload capture is enabled.
 
+If you start capture after manually stopping the Armoury/Aura stack, select `Stack already stopped, start capture now` before pressing start. This records `STACK_ALREADY_STOPPED_AT_CAPTURE_START` and a service/process snapshot at capture start. In that mode, missing `SERVICE_STOPPED` is expected and does not mean the capture was performed incorrectly.
+
+For fast Armoury rearm bursts, enable `High-rate ring buffer` in the panel. The probe minimizes sleeps, can raise priority, focuses on `ADDR=0x40` and registers `0x8000,0x8020,0x80A0,0x80F1,0x8022,0x8023`, and dumps recent snapshots around block writes. It still does not poll `SMBBLKDAT/+0x07`; payload reads remain limited to `CMD=0x03` block writes when payload capture is enabled.
+
 If a capture does not start from the panel, confirm the probe exists:
 
 ```powershell
@@ -185,6 +252,16 @@ The script:
 - writes a sanitized summary to `docs/research/`.
 
 The Control Center can launch this flow from Capture Lab, but it opens a separate elevated PowerShell window and the dashboard may disconnect because the script stops the Sylphie server.
+
+To compare captures, use:
+
+```powershell
+python tools\analyze_capture.py research\captures\armoury_ui_YYYYMMDD_HHMMSS_master.log
+```
+
+The analyzer reports whether `0x8000 len=3` was observed, whether that block payload was captured, and the marker timeline around `CAPTURE_START`, `STACK_ALREADY_STOPPED_AT_CAPTURE_START`, `SERVICE_STARTED`, `ARMOURY_LAUNCHED`, `FIRST_LIGHT`, and `OK_CLICKED`.
+
+For the stuck-red case, use `Capture Lab` -> `Capture stuck color transition`. Mark `RED_STUCK_STATE`, select green in Armoury, mark `COLOR_PICKER_CHANGED_GREEN`, mark `COLOR_VISUALLY_CHANGED` when the LED actually changes, click OK in Armoury, then mark `POPUP_OK_CLICKED`. Do not force an Apply marker. The analyzer reports block writes and watched byte writes between color picker change and visual change.
 
 ## When To Use Takeover
 
