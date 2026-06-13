@@ -349,7 +349,7 @@ class SylphieServer:
                 self.current_command = command
 
             ownership = self.ownership_status()
-            if ownership.get("mode") != "sylphie":
+            if not ownership.get("write_allowed"):
                 result = {
                     "ok": False,
                     "error": "RGB writes are blocked unless Current owner is Sylphie",
@@ -513,29 +513,35 @@ class SylphieServer:
         agent_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
         task_status = self.agent_task_status()
         probe = ownership_probe_snapshot()
-        mode, reasons = derive_ownership_mode(capture_running, agent_status, probe)
+        ownership_marker = read_ownership_marker(self.project_root)
+        derived = derive_ownership_mode(capture_running, agent_status, probe, ownership_marker.get("mode") == "sylphie")
         return {
             "ok": probe.get("ok", False),
-            "mode": mode,
-            "owner": mode,
-            "reasons": reasons,
-            "write_allowed": mode == "sylphie",
+            **derived,
+            "owner": derived["mode"],
             "capture_running": capture_running,
             "agent_status": agent_status,
             "agent_task": task_status,
+            "ownership_marker": ownership_marker,
             "probe": probe,
         }
 
-    def run_ownership_action(self, action, disable_autostart=False, launch_armoury=False):
+    def run_ownership_action(self, action, disable_autostart=False, launch_armoury=False, include_armoury_core=False):
         if action == "return-to-armoury":
             args = []
             if disable_autostart:
                 args.append("-DisableAutostart")
             if launch_armoury:
                 args.append("-LaunchArmoury")
-            return self.run_elevated_lifecycle_script("return-to-armoury", args, kind="ownership-return-to-armoury")
+            result = self.run_elevated_lifecycle_script("return-to-armoury", args, kind="ownership-return-to-armoury")
+            if result.get("ok"):
+                write_ownership_marker(self.project_root, "armoury", "return-to-armoury requested")
+            return result
         if action == "takeover-for-sylphie":
-            return self.run_elevated_lifecycle_script("takeover-for-sylphie", [], kind="ownership-takeover-for-sylphie")
+            args = []
+            if include_armoury_core:
+                args.append("-IncludeArmouryCore")
+            return self.run_elevated_lifecycle_script("takeover-for-sylphie", args, kind="ownership-takeover-for-sylphie")
         return {"ok": False, "error": "unknown ownership action"}
 
     def armoury_health(self):
@@ -1155,63 +1161,169 @@ foreach ($name in $processNames) {{
     return payload
 
 
-def derive_ownership_mode(capture_running, agent_status, probe):
+def ownership_marker_path(project_root):
+    return Path(project_root) / ".sylphie" / "ownership_mode.json"
+
+
+def read_ownership_marker(project_root):
+    path = ownership_marker_path(project_root)
+    if not path.is_file():
+        return {"mode": "unknown"}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {"mode": "unknown"}
+    if not isinstance(payload, dict):
+        return {"mode": "unknown"}
+    return payload
+
+
+def write_ownership_marker(project_root, mode, reason):
+    path = ownership_marker_path(project_root)
+    try:
+        ensure_dir(path.parent)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump({"mode": mode, "reason": reason, "updated_at": time.time()}, handle, separators=(",", ":"))
+    except OSError:
+        pass
+
+
+def process_base_names(probe):
+    return sorted({str(item.get("base_name") or item.get("name") or "").lower() for item in (probe.get("processes") or [])})
+
+
+def warning_only_armoury_processes(probe):
+    names = process_base_names(probe)
+    warning_names = {
+        "armourycrate",
+        "armourycrate.service",
+        "armourycrate.usersessionhelper",
+        "asus_framework",
+    }
+    return [name for name in names if name in warning_names]
+
+
+def blocking_owner_processes_when_agent_offline(probe):
+    names = process_base_names(probe)
+    blocking_names = {
+        "armourysocketserver",
+        "armouryswagent",
+        "armouryhtmldebugserver",
+        "aurawallpaperservice",
+        "aura wallpaper service",
+        "lightingservice",
+        "aura",
+        "openrgb",
+        "openaurasdk",
+    }
+    return [name for name in names if name in blocking_names]
+
+
+def derive_ownership_mode(capture_running, agent_status, probe, sylphie_mode_active):
     reasons = []
     agent_running = bool(agent_status.get("ok"))
     agent_response = agent_status.get("response") or {}
     agent_state = agent_response.get("state") or {}
     agent_elevated = bool(agent_state.get("is_elevated"))
+    agent_owner_status = str(agent_state.get("current_owner_status") or "unknown")
+    agent_blockers = agent_state.get("blocking_conflicts") or []
+    agent_warnings = agent_state.get("warnings") or []
     lighting = probe.get("lighting_service") or {}
     lighting_running = str(lighting.get("state") or "").lower() == "running"
-    processes = probe.get("processes") or []
-    process_names = {str(item.get("base_name") or item.get("name") or "").lower() for item in processes}
-    armoury_processes = [
-        name for name in process_names
-        if name in {
-            "armourycrate",
-            "armourycrate.usersessionhelper",
-            "armourysocketserver",
-            "armouryswagent",
-            "armouryhtmldebugserver",
-            "asus_framework",
-            "aurawallpaperservice",
-            "aura wallpaper service",
-            "lightingservice",
-            "aura",
-            "openrgb",
-            "openaurasdk",
-        }
-    ]
+    offline_blocking_processes = blocking_owner_processes_when_agent_offline(probe)
+    warning_processes = warning_only_armoury_processes(probe)
+    informational_processes = []
 
     if capture_running:
         reasons.append("research capture is running")
         if agent_running:
             reasons.append("Sylphie agent is also running during capture")
-            return "conflict", reasons
-        return "research", reasons
+            return {
+                "mode": "conflict",
+                "reasons": reasons,
+                "write_allowed": False,
+                "blocking_conflicts": ["Sylphie agent is running during research capture"],
+                "warnings": agent_warnings,
+                "informational_processes": informational_processes,
+            }
+        return {
+            "mode": "research",
+            "reasons": reasons,
+            "write_allowed": False,
+            "blocking_conflicts": [],
+            "warnings": [],
+            "informational_processes": informational_processes,
+        }
 
     if agent_running:
         reasons.append("Sylphie agent is responding")
         if not agent_elevated:
             reasons.append("Sylphie agent is not elevated")
-            return "conflict", reasons
-        if lighting_running or armoury_processes:
-            if lighting_running:
-                reasons.append("LightingService is running")
-            if armoury_processes:
-                reasons.append("Armoury/Aura process detected: " + ", ".join(sorted(armoury_processes)))
-            return "conflict", reasons
-        return "sylphie", reasons
+            return {
+                "mode": "conflict",
+                "reasons": reasons,
+                "write_allowed": False,
+                "blocking_conflicts": ["Sylphie agent is not elevated"],
+                "warnings": agent_warnings,
+                "informational_processes": informational_processes,
+            }
+        if agent_blockers:
+            reasons.append("Blocking conflicts reported by agent")
+            return {
+                "mode": "conflict",
+                "reasons": reasons,
+                "write_allowed": False,
+                "blocking_conflicts": agent_blockers,
+                "warnings": agent_warnings,
+                "informational_processes": informational_processes,
+            }
+        if agent_warnings:
+            reasons.append("Warning-only Armoury processes detected: " + "; ".join(agent_warnings))
+        if warning_processes:
+            informational_processes = warning_processes
+        if any("ArmouryCrate.exe" in item or "ArmouryCrate " in item for item in agent_warnings):
+            reasons.append("Armoury UI is still open.")
+        if agent_owner_status == "warning":
+            mode = "sylphie-warning" if sylphie_mode_active else "ready-warning"
+        else:
+            mode = "sylphie" if sylphie_mode_active else "ready"
+        if not sylphie_mode_active:
+            reasons.append("Takeover for Sylphie has not completed in this session")
+        return {
+            "mode": mode,
+            "reasons": reasons,
+            "write_allowed": bool(sylphie_mode_active),
+            "blocking_conflicts": [],
+            "warnings": agent_warnings,
+            "informational_processes": informational_processes,
+        }
 
-    if lighting_running or armoury_processes:
+    if lighting_running or offline_blocking_processes or warning_processes:
         if lighting_running:
             reasons.append("LightingService is running")
-        if armoury_processes:
-            reasons.append("Armoury/Aura process detected: " + ", ".join(sorted(armoury_processes)))
-        return "armoury", reasons
+        if offline_blocking_processes:
+            reasons.append("Armoury owner processes detected: " + ", ".join(offline_blocking_processes))
+        if warning_processes:
+            reasons.append("Warning-only Armoury processes detected: " + ", ".join(warning_processes))
+        return {
+            "mode": "armoury",
+            "reasons": reasons,
+            "write_allowed": False,
+            "blocking_conflicts": [],
+            "warnings": warning_processes,
+            "informational_processes": [],
+        }
 
     reasons.append("no clear Armoury or Sylphie owner detected")
-    return "unknown", reasons
+    return {
+        "mode": "unknown",
+        "reasons": reasons,
+        "write_allowed": False,
+        "blocking_conflicts": [],
+        "warnings": [],
+        "informational_processes": [],
+    }
 
 
 def armoury_health_snapshot():
@@ -1658,6 +1770,8 @@ def make_handler(server_state):
                         "include_armoury_core": bool(body.get("include_armoury_core", False)),
                     }
                     result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
+                    if result.get("ok"):
+                        write_ownership_marker(server_state.project_root, "sylphie", "agent takeover_execute succeeded")
                     status = 200 if result["ok"] else 500
                 elif path == "/api/agent/restore-services" or path == "/api/services/restore" or path == "/api/restore-services":
                     result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "restore_services"}, timeout_seconds=10, command=["agent", "restore_services"])
@@ -1688,7 +1802,10 @@ def make_handler(server_state):
                     )
                     status = 200 if result["ok"] else 500
                 elif path == "/api/ownership/takeover-for-sylphie":
-                    result = server_state.run_ownership_action("takeover-for-sylphie")
+                    result = server_state.run_ownership_action(
+                        "takeover-for-sylphie",
+                        include_armoury_core=bool(body.get("include_armoury_core", False)),
+                    )
                     status = 200 if result["ok"] else 500
                 elif path == "/api/diagnostics/audio-reactive/restart-lighting":
                     status, result = server_state.run_audio_reactive_action("restart-lighting-service")
@@ -1715,6 +1832,8 @@ def make_handler(server_state):
                             "include_armoury_core": bool(body.get("include_armoury_core", False)),
                         }
                         result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
+                        if result.get("ok"):
+                            write_ownership_marker(server_state.project_root, "sylphie", "agent takeover_execute succeeded")
                     else:
                         payload = {"id": str(uuid.uuid4()), "cmd": "takeover_dry_run", "include_armoury_core": bool(body.get("include_armoury_core", False))}
                         result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])

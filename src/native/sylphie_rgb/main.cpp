@@ -93,6 +93,7 @@ const TakeoverRule kTakeoverRules[] = {
     {"Aura", true, true, TakeoverTier::Tier1},
     {"OpenRGB", false, true, TakeoverTier::Tier1},
     {"OpenAuraSDK", false, true, TakeoverTier::Tier1},
+    {"ArmouryCrate", false, true, TakeoverTier::Tier2WarnOnly},
     {"ArmouryCrate.Service", true, true, TakeoverTier::Tier2WarnOnly},
     {"ArmouryCrate.UserSessionHelper", true, true, TakeoverTier::Tier2WarnOnly},
     {"asus_framework", true, true, TakeoverTier::Tier2WarnOnly},

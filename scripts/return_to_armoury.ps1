@@ -67,6 +67,14 @@ try {
         $launched = Start-ArmouryIfKnown
     }
 
+    $stateDir = Join-Path $ProjectRoot ".sylphie"
+    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+    [pscustomobject]@{
+        mode = "armoury"
+        reason = "return-to-armoury completed"
+        updated_at = (Get-Date).ToString("o")
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stateDir "ownership_mode.json") -Encoding UTF8
+
     $health = [pscustomobject]@{
         ok = $true
         action = "return-to-armoury"

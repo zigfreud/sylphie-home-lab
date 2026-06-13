@@ -111,6 +111,7 @@ bool process_match_is_blocking(const ProcessMatch& process) {
 bool process_match_is_warning(const ProcessMatch& process) {
     static const char* const warnings[] = {
         "AsusCertService",
+        "ArmouryCrate",
         "ArmouryCrate.Service",
         "ArmouryCrate.UserSessionHelper",
         "asus_framework",

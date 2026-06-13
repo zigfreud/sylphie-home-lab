@@ -150,12 +150,15 @@ p {
   height: 18px;
 }
 
-.owner-sylphie {
+.owner-sylphie,
+.owner-sylphie-warning {
   border-color: rgba(129, 217, 154, 0.65);
 }
 
 .owner-armoury,
-.owner-research {
+.owner-research,
+.owner-ready,
+.owner-ready-warning {
   border-color: rgba(88, 196, 220, 0.65);
 }
 

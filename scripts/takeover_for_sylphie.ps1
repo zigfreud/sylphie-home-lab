@@ -1,5 +1,6 @@
 param(
-    [string]$TaskName = "SylphieAgent"
+    [string]$TaskName = "SylphieAgent",
+    [switch]$IncludeArmouryCore
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,7 +25,11 @@ try {
     }
 
     Write-OwnershipLog "Executing takeover; LightingService is stopped first by the native takeover flow"
-    & $RgbExe takeover --execute --i-accept-stopping-lighting-services | ForEach-Object { Write-OwnershipLog $_ }
+    $takeoverArgs = @("takeover", "--execute", "--i-accept-stopping-lighting-services")
+    if ($IncludeArmouryCore) {
+        $takeoverArgs += "--include-armoury-core"
+    }
+    & $RgbExe @takeoverArgs | ForEach-Object { Write-OwnershipLog $_ }
 
     Write-OwnershipLog "Starting Sylphie agent manually without enabling autostart"
     & (Join-Path $PSScriptRoot "start_agent_now.ps1") -TaskName $TaskName | ForEach-Object { Write-OwnershipLog $_ }
@@ -34,6 +39,15 @@ try {
 
     Write-OwnershipLog "Running read-only bus-status"
     & $RgbExe bus-status | ForEach-Object { Write-OwnershipLog $_ }
+
+    $stateDir = Join-Path $ProjectRoot ".sylphie"
+    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+    [pscustomobject]@{
+        mode = "sylphie"
+        reason = "takeover-for-sylphie completed"
+        include_armoury_core = [bool]$IncludeArmouryCore
+        updated_at = (Get-Date).ToString("o")
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stateDir "ownership_mode.json") -Encoding UTF8
 
     Write-OwnershipLog "takeover-for-sylphie completed"
 } catch {

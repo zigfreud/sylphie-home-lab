@@ -50,6 +50,7 @@ const ownerText = document.getElementById("ownerText");
 const ownerReasons = document.getElementById("ownerReasons");
 const returnDisableAutostart = document.getElementById("returnDisableAutostart");
 const returnLaunchArmoury = document.getElementById("returnLaunchArmoury");
+const takeoverIncludeArmouryCore = document.getElementById("takeoverIncludeArmouryCore");
 const results = {
   lights: document.getElementById("lightsResult"),
   agent: document.getElementById("agentResult"),
@@ -68,6 +69,7 @@ const captureSummary = document.getElementById("captureSummary");
 let busy = false;
 let lastRequestedRgb = "FF0000";
 let currentOwnerMode = "unknown";
+let currentWriteAllowed = false;
 
 function activePanelName() {
   return document.querySelector(".tab-panel.active")?.id || "lights";
@@ -79,17 +81,16 @@ function setBusy(value, text = "Running...") {
   document.querySelectorAll("button[data-action]").forEach((button) => {
     button.disabled = value;
   });
-  colorInput.disabled = value || currentOwnerMode !== "sylphie";
+  colorInput.disabled = value || !currentWriteAllowed;
   if (!value) applyOwnerGuards();
 }
 
 function applyOwnerGuards() {
-  const writesAllowed = currentOwnerMode === "sylphie";
   document.querySelectorAll("[data-owner-required='sylphie']").forEach((item) => {
-    item.disabled = busy || !writesAllowed;
-    item.title = writesAllowed ? "" : "RGB writes are enabled only in Sylphie Mode.";
+    item.disabled = busy || !currentWriteAllowed;
+    item.title = currentWriteAllowed ? "" : "RGB writes are enabled only after Takeover for Sylphie completes without blocking conflicts.";
   });
-  colorInput.disabled = busy || !writesAllowed;
+  colorInput.disabled = busy || !currentWriteAllowed;
 }
 
 function pretty(payload) {
@@ -172,6 +173,7 @@ function updateAgentTaskSummary(payload) {
     ["Pipe responding", String(payload.pipe_responding ?? payload.agent_ping)],
     ["PID", (payload.pids || []).join(", ") || "none"],
     ["Elevated", String(payload.elevated)],
+    ["Agent owner status", payload.agent_state?.current_owner_status || "unknown"],
   ];
   agentSummary.innerHTML = items.map(([label, value]) => `<div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div>`).join("");
 }
@@ -179,15 +181,25 @@ function updateAgentTaskSummary(payload) {
 function updateOwnershipBanner(payload) {
   if (!payload || !("mode" in payload)) return;
   currentOwnerMode = payload.mode || "unknown";
+  currentWriteAllowed = Boolean(payload.write_allowed);
   const label = {
     armoury: "Armoury",
     sylphie: "Sylphie",
+    "sylphie-warning": "Sylphie Warning",
+    ready: "Ready",
+    "ready-warning": "Ready Warning",
     research: "Research",
     conflict: "Conflict",
     unknown: "Unknown",
   }[currentOwnerMode] || currentOwnerMode;
   ownerText.textContent = label;
-  ownerReasons.textContent = (payload.reasons || []).join(" | ") || "No ownership details loaded.";
+  const parts = [];
+  if (payload.blocking_conflicts?.length) parts.push(`Blocking conflicts: ${payload.blocking_conflicts.join(", ")}`);
+  if (payload.warnings?.length) parts.push(`Warnings: ${payload.warnings.join(", ")}`);
+  if (payload.informational_processes?.length) parts.push(`Informational processes: ${payload.informational_processes.join(", ")}`);
+  if (payload.reasons?.length) parts.push(payload.reasons.join(" | "));
+  parts.push(`RGB writes: ${payload.write_allowed ? "enabled" : "blocked"}`);
+  ownerReasons.textContent = parts.join(" | ") || "No ownership details loaded.";
   ownerBanner.className = `owner-banner owner-${currentOwnerMode}`;
   applyOwnerGuards();
 }
@@ -416,9 +428,13 @@ const actions = {
     })).then(() => setTimeout(refreshOwnership, 3000));
   },
   takeoverForSylphie: () => {
-    const accepted = window.confirm("Take over for Sylphie Mode now? Armoury/Aura lighting services will be stopped first.");
+    const includeArmouryCore = Boolean(takeoverIncludeArmouryCore?.checked);
+    const message = includeArmouryCore
+      ? "Take over for Sylphie Mode and close Armoury UI/helpers? LightingService will be stopped first."
+      : "Take over for Sylphie Mode now? LightingService will be stopped first. Armoury UI/helper warnings are not closed by default.";
+    const accepted = window.confirm(message);
     if (!accepted) return;
-    return run("takeover", "Taking over for Sylphie...", () => post("/api/ownership/takeover-for-sylphie", {})).then(() => setTimeout(refreshOwnership, 3000));
+    return run("takeover", "Taking over for Sylphie...", () => post("/api/ownership/takeover-for-sylphie", {include_armoury_core: includeArmouryCore})).then(() => setTimeout(refreshOwnership, 5000));
   },
   goCapture: () => selectTab("capture"),
   emergencyStopSylphie: () => {
@@ -463,7 +479,7 @@ const actions = {
   takeoverDryRun: () => run("takeover", "Planning takeover...", () => post("/api/agent/takeover-dry-run", {})),
   takeoverExecute: () => {
     if (!window.confirm("Stop ASUS lighting services and take ownership? LightingService will be stopped first.")) return;
-    return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {i_accept_stopping_lighting_services: true}));
+    return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {i_accept_stopping_lighting_services: true})).then(() => setTimeout(refreshOwnership, 2000));
   },
   restoreServices: () => run("takeover", "Restoring services...", () => post("/api/agent/restore-services")),
   armouryHealth: () => run("diagnostics", "Checking Armoury health...", () => request("/api/diagnostics/armoury-health")),
