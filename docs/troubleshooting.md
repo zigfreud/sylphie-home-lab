@@ -99,12 +99,16 @@ Music mode works only when Armoury addons and the audio capture pipeline are hea
 
 ## Ownership Modes
 
-The Control Center reports one of four ownership modes:
+The Control Center reports these ownership modes:
 
 - `Armoury`: Armoury/LightingService owns RGB. Sylphie can show diagnostics, status, logs, and read-only captures, but RGB writes are blocked.
-- `Sylphie`: `sylphie_agent.exe` owns RGB. Armoury/LightingService should be stopped, and RGB writes are allowed.
+- `Soft Takeover / Unverified`: tier1 lighting blockers are stopped, but Armoury core services/helpers are still running. RGB writes are blocked.
+- `Sylphie Candidate`: full takeover stopped tier1 lighting blockers and Armoury core; RGB writes are allowed, but visual output is still unverified.
+- `Sylphie Verified`: the red/green/blue/off direct sanity test was visually confirmed by the user.
 - `Research`: a read-only capture probe is running. SMBus writes are blocked.
 - `Conflict` / `Unknown`: more than one owner is possible, or no owner is clear. RGB writes are blocked until resolved.
+
+Armoury updates may leave multiple Armoury service generations present. Treat `ArmouryCrateService`, legacy `ArmouryCrate.Service`, and `asComSvc` as tier2 Armoury core. They are warnings during soft takeover and are stopped only by full takeover with the explicit `Close Armoury UI/helpers during takeover` checkbox. `AsusCertService` is never stopped by default; `asus`, `asusm`, and `AsusROGLSLService` are ignored update/download services by default.
 
 ## Return To Armoury Flow
 
@@ -128,13 +132,14 @@ Use `Takeover for Sylphie` only when you explicitly want Sylphie Mode.
 The flow:
 
 - stops `LightingService` first;
+- stops `Aura Wallpaper Service` when present;
 - waits for service release;
-- terminates only whitelisted Armoury/Aura leftovers;
+- terminates only whitelisted tier1 leftovers by default;
 - does not stop `AsusCertService` by default;
 - does not change service `StartupType`;
 - starts the Sylphie agent manually, not through autostart;
 - runs read-only doctor/bus-status checks;
-- unlocks RGB controls only after ownership resolves to `Sylphie`.
+- unlocks RGB controls only after full takeover resolves to `Sylphie Candidate`, and marks `Sylphie Verified` only after direct visual sanity confirmation.
 
 ## Armoury-Lite Recover
 

@@ -9,6 +9,7 @@ Local API/dashboard stability:
 - Write commands are serialized to avoid concurrent SMBus access.
 - Dashboard is local-first and binds to `127.0.0.1` by default.
 - Controller ownership checks run before API writes.
+- Armoury/Sylphie coexistence distinguishes soft takeover, Sylphie Candidate, and Sylphie Verified via direct visual sanity test.
 - Conservative software recovery is available through the CLI and dashboard.
 
 ## Next Phases
@@ -23,6 +24,7 @@ Local API/dashboard stability:
 ## Future Issues
 
 - Implement native Sylphie audio reactive mode using WASAPI loopback, independent of Armoury's audio capture pipeline.
+- Track Armoury service alias changes after Armoury Crate updates (`ArmouryCrateService`, legacy `ArmouryCrate.Service`, `asComSvc`).
 
 ## Deferred
 

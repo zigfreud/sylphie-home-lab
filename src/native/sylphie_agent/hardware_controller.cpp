@@ -24,6 +24,7 @@ enum class TakeoverTier {
     Tier1,
     Tier2WarnOnly,
     NeverStop,
+    Ignore,
 };
 
 struct TakeoverRule {
@@ -43,6 +44,7 @@ struct TakeoverTarget {
     bool service_exists = false;
     bool service_running = false;
     std::string service_state;
+    std::string service_name;
     std::string start_mode;
     std::string display_name;
     std::string binary_path;
@@ -51,19 +53,24 @@ struct TakeoverTarget {
 
 const TakeoverRule kTakeoverRules[] = {
     {"LightingService", true, true, TakeoverTier::Tier1},
-    {"ArmourySocketServer", true, true, TakeoverTier::Tier1},
-    {"ArmourySwAgent", true, true, TakeoverTier::Tier1},
-    {"ArmouryHtmlDebugServer", true, true, TakeoverTier::Tier1},
-    {"AuraWallpaperService", true, true, TakeoverTier::Tier1},
-    {"Aura Wallpaper Service", true, true, TakeoverTier::Tier1},
-    {"Aura", true, true, TakeoverTier::Tier1},
+    {"Aura Wallpaper Service", true, false, TakeoverTier::Tier1},
+    {"AuraWallpaperService", false, true, TakeoverTier::Tier1},
+    {"ArmourySocketServer", false, true, TakeoverTier::Tier1},
+    {"ArmourySwAgent", false, true, TakeoverTier::Tier1},
+    {"ArmouryHtmlDebugServer", false, true, TakeoverTier::Tier1},
     {"OpenRGB", false, true, TakeoverTier::Tier1},
     {"OpenAuraSDK", false, true, TakeoverTier::Tier1},
+    {"ArmouryCrateService", true, false, TakeoverTier::Tier2WarnOnly},
+    {"asComSvc", true, false, TakeoverTier::Tier2WarnOnly},
+    {"ArmouryCrate.Service", true, false, TakeoverTier::Tier2WarnOnly},
     {"ArmouryCrate", false, true, TakeoverTier::Tier2WarnOnly},
-    {"ArmouryCrate.Service", true, true, TakeoverTier::Tier2WarnOnly},
-    {"ArmouryCrate.UserSessionHelper", true, true, TakeoverTier::Tier2WarnOnly},
-    {"asus_framework", true, true, TakeoverTier::Tier2WarnOnly},
+    {"ArmouryCrate.Service", false, true, TakeoverTier::Tier2WarnOnly},
+    {"ArmouryCrate.UserSessionHelper", false, true, TakeoverTier::Tier2WarnOnly},
+    {"asus_framework", false, true, TakeoverTier::Tier2WarnOnly},
     {"AsusCertService", true, true, TakeoverTier::NeverStop},
+    {"asus", true, false, TakeoverTier::Ignore},
+    {"asusm", true, false, TakeoverTier::Ignore},
+    {"AsusROGLSLService", true, false, TakeoverTier::Ignore},
 };
 
 std::string hex_byte(uint8_t value) {
@@ -199,6 +206,8 @@ const char* tier_label(TakeoverTier tier) {
         return "tier2-warning";
     case TakeoverTier::NeverStop:
         return "never-stop";
+    case TakeoverTier::Ignore:
+        return "ignore";
     }
     return "unknown";
 }
@@ -229,6 +238,59 @@ std::vector<unsigned long> find_exact_process_pids(const std::string& rule_name)
     return pids;
 }
 
+std::string find_service_name_by_name_or_display(SC_HANDLE scm, const std::string& query_name) {
+    SC_HANDLE direct = OpenServiceA(scm, query_name.c_str(), SERVICE_QUERY_STATUS);
+    if (direct != nullptr) {
+        CloseServiceHandle(direct);
+        return query_name;
+    }
+
+    DWORD bytes_needed = 0;
+    DWORD services_returned = 0;
+    DWORD resume_handle = 0;
+    EnumServicesStatusExA(
+        scm,
+        SC_ENUM_PROCESS_INFO,
+        SERVICE_WIN32,
+        SERVICE_STATE_ALL,
+        nullptr,
+        0,
+        &bytes_needed,
+        &services_returned,
+        &resume_handle,
+        nullptr);
+    if (bytes_needed == 0) {
+        return "";
+    }
+
+    std::vector<uint8_t> buffer(bytes_needed);
+    resume_handle = 0;
+    if (!EnumServicesStatusExA(
+            scm,
+            SC_ENUM_PROCESS_INFO,
+            SERVICE_WIN32,
+            SERVICE_STATE_ALL,
+            buffer.data(),
+            static_cast<DWORD>(buffer.size()),
+            &bytes_needed,
+            &services_returned,
+            &resume_handle,
+            nullptr)) {
+        return "";
+    }
+
+    const std::string wanted = lower_ascii(query_name);
+    ENUM_SERVICE_STATUS_PROCESSA* entries = reinterpret_cast<ENUM_SERVICE_STATUS_PROCESSA*>(buffer.data());
+    for (DWORD i = 0; i < services_returned; ++i) {
+        const std::string service_name = entries[i].lpServiceName != nullptr ? entries[i].lpServiceName : "";
+        const std::string display_name = entries[i].lpDisplayName != nullptr ? entries[i].lpDisplayName : "";
+        if (lower_ascii(service_name) == wanted || lower_ascii(display_name) == wanted) {
+            return service_name;
+        }
+    }
+    return "";
+}
+
 void query_service_details(SC_HANDLE scm, TakeoverTarget& target) {
     target.service_exists = false;
     target.service_running = false;
@@ -237,7 +299,13 @@ void query_service_details(SC_HANDLE scm, TakeoverTarget& target) {
         return;
     }
 
-    SC_HANDLE service = OpenServiceA(scm, target.name.c_str(), SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
+    const std::string service_name = find_service_name_by_name_or_display(scm, target.name);
+    if (service_name.empty()) {
+        return;
+    }
+    target.service_name = service_name;
+
+    SC_HANDLE service = OpenServiceA(scm, service_name.c_str(), SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
     if (service == nullptr) {
         return;
     }
@@ -306,15 +374,18 @@ std::vector<TakeoverTarget> collect_takeover_targets(bool include_armoury_core, 
 }
 
 std::string target_to_json(const TakeoverTarget& target) {
+    const std::string output_name = target.service_exists && !target.service_name.empty() ? target.service_name : target.name;
     std::ostringstream out;
     out << "{"
-        << "\"name\":" << json_string(target.name) << ","
+        << "\"name\":" << json_string(output_name) << ","
+        << "\"rule_name\":" << json_string(target.name) << ","
         << "\"display_name\":" << json_string_or_null(target.display_name) << ","
         << "\"tier\":" << json_string(tier_label(target.tier)) << ","
         << "\"service\":" << (target.service ? "true" : "false") << ","
         << "\"process\":" << (target.process ? "true" : "false") << ","
         << "\"allowed_to_stop\":" << (target.allowed_to_stop ? "true" : "false") << ","
         << "\"service_exists\":" << (target.service_exists ? "true" : "false") << ","
+        << "\"process_exists\":" << (!target.pids.empty() ? "true" : "false") << ","
         << "\"state\":" << json_string(target.service_state.empty() ? "unknown" : target.service_state) << ","
         << "\"start_mode\":" << json_string_or_null(target.start_mode) << ","
         << "\"pid\":" << target.service_pid << ","
@@ -655,7 +726,7 @@ std::string HardwareController::takeover_dry_run_json(bool include_armoury_core)
     for (const auto& target : targets) {
         if (target.allowed_to_stop) {
             if (target.service && target.service_exists && target.service_running) {
-                stop_services_first.push_back(target.name);
+                stop_services_first.push_back(target.service_name.empty() ? target.name : target.service_name);
             }
             if (target.process && !target.pids.empty()) {
                 terminate_processes_after.push_back(target.name);
@@ -708,10 +779,11 @@ std::string HardwareController::takeover_execute_json(bool accepted_stop, bool i
             continue;
         }
         std::string report;
-        const bool stopped = stop_service_by_name(scm, target.name, report);
-        reports.push_back("service " + target.name + ": " + report);
+        const std::string service_name = target.service_name.empty() ? target.name : target.service_name;
+        const bool stopped = stop_service_by_name(scm, service_name, report);
+        reports.push_back("service " + service_name + ": " + report);
         if (stopped) {
-            stopped_services.push_back(target.name);
+            stopped_services.push_back(service_name);
         }
     }
     CloseServiceHandle(scm);

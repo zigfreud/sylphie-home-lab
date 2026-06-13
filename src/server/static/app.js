@@ -133,6 +133,11 @@ function updateConflictAlert(payload) {
     conflictAlert.textContent = `Takeover cannot complete automatically because some blocking conflicts require manual action: ${manual.join(", ")}`;
     return;
   }
+  if (payload?.ownership_mode === "takeover_noop" || payload?.mode === "takeover-noop" || payload?.ownership_message) {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = payload.ownership_message || "Takeover made no changes. Armoury core still running. RGB writes remain blocked until full takeover or manual override.";
+    return;
+  }
   if ((blockers && blockers.length) || payload?.error === "controller conflict detected") {
     conflictAlert.hidden = false;
     conflictAlert.textContent = `Blocking conflicts: ${(blockers || []).join(", ") || payload.error}. Run takeover first.`;
@@ -186,6 +191,10 @@ function updateOwnershipBanner(payload) {
     armoury: "Armoury",
     sylphie: "Sylphie",
     "sylphie-warning": "Sylphie Warning",
+    "soft-takeover": "Soft Takeover / Unverified",
+    "sylphie-candidate": "Sylphie Candidate",
+    "sylphie-verified": "Sylphie Verified",
+    "takeover-noop": "Takeover No-op",
     ready: "Ready",
     "ready-warning": "Ready Warning",
     research: "Research",
@@ -210,11 +219,12 @@ function updateServices(payload) {
   if (!Array.isArray(services)) return;
   serviceTable.innerHTML = `
     <table>
-      <thead><tr><th>Name</th><th>State</th><th>Tier</th><th>PID</th><th>Action</th></tr></thead>
+      <thead><tr><th>Name</th><th>Display</th><th>State</th><th>Tier</th><th>PID</th><th>Action</th></tr></thead>
       <tbody>
         ${services.map((svc) => `
           <tr>
             <td>${escapeHtml(svc.name || "")}</td>
+            <td>${escapeHtml(svc.display_name || svc.rule_name || "")}</td>
             <td>${escapeHtml(svc.state || "unknown")}</td>
             <td>${escapeHtml(svc.tier || "")}</td>
             <td>${escapeHtml(String(svc.pid || (svc.process_pids || []).join(", ") || ""))}</td>
@@ -299,18 +309,22 @@ async function post(path, body = undefined) {
 async function run(panel, label, fn) {
   if (busy) return;
   setBusy(true, label);
+  let finalStatus = "Idle";
   try {
     const payload = await fn();
     show(panel, payload);
-    statusText.textContent = payload.ok ? "Done" : "Error";
+    finalStatus = payload.bus_write_ok && payload.visual_state === "unknown"
+      ? "SMBus write completed. Visual change not verified."
+      : (payload.ok ? "Done" : "Error");
     return payload;
   } catch (error) {
     const payload = {ok: false, error: String(error)};
     show(panel, payload);
-    statusText.textContent = "Error";
+    finalStatus = "Error";
     return payload;
   } finally {
     setBusy(false);
+    statusText.textContent = finalStatus;
   }
 }
 
@@ -416,6 +430,31 @@ async function setScene(name) {
   return run("lights", `Applying ${name}...`, () => post("/api/scene", {name}));
 }
 
+async function directSanityTest() {
+  const steps = [
+    ["red", "FF0000"],
+    ["green", "00FF00"],
+    ["blue", "0000FF"],
+    ["off", "000000"],
+  ];
+  for (const [label, rgb] of steps) {
+    const payload = label === "off" ? await post("/api/off", {}) : await post("/api/set", {rgb});
+    show("lights", payload);
+    if (!payload.ok || !payload.bus_write_ok) {
+      statusText.textContent = "Direct sanity test stopped: SMBus write failed.";
+      return payload;
+    }
+    statusText.textContent = "SMBus write completed. Visual change not verified.";
+    if (!window.confirm(`Did the LEDs visually change to ${label}?`)) {
+      return {ok: false, error: `visual confirmation failed for ${label}`};
+    }
+  }
+  const verified = await post("/api/ownership/mark-verified", {});
+  show("lights", verified);
+  await refreshOwnership();
+  return verified;
+}
+
 const actions = {
   health: () => run(activePanelName(), "Checking...", () => request("/api/health")),
   ownershipStatus: () => run(activePanelName(), "Checking owner...", () => request("/api/ownership/status")),
@@ -449,6 +488,7 @@ const actions = {
     return run("lights", "Applying color...", () => post("/api/set", {rgb}));
   },
   off: () => setScene("off"),
+  directSanityTest: () => run("lights", "Running direct sanity test...", directSanityTest),
   agentPing: () => run("agent", "Pinging agent...", () => post("/api/agent/ping")),
   agentStatus: () => run("agent", "Loading agent status...", () => request("/api/agent/status")),
   agentTaskStatus: () => run("agent", "Loading task status...", () => request("/api/agent/task/status")),
@@ -476,10 +516,13 @@ const actions = {
   stopAgentTask: () => run("agent", "Stopping agent...", () => post("/api/agent/task/stop", {})).then(() => setTimeout(refreshOwnership, 2000)),
   serviceStatus: () => run("takeover", "Loading services...", () => request("/api/services/status")),
   takeoverCheck: () => run("takeover", "Checking takeover...", () => post("/api/agent/takeover-check")),
-  takeoverDryRun: () => run("takeover", "Planning takeover...", () => post("/api/agent/takeover-dry-run", {})),
+  takeoverDryRun: () => run("takeover", "Planning takeover...", () => post("/api/agent/takeover-dry-run", {include_armoury_core: Boolean(takeoverIncludeArmouryCore?.checked)})),
   takeoverExecute: () => {
     if (!window.confirm("Stop ASUS lighting services and take ownership? LightingService will be stopped first.")) return;
-    return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {i_accept_stopping_lighting_services: true})).then(() => setTimeout(refreshOwnership, 2000));
+    return run("takeover", "Executing takeover...", () => post("/api/agent/takeover-execute", {
+      i_accept_stopping_lighting_services: true,
+      include_armoury_core: Boolean(takeoverIncludeArmouryCore?.checked),
+    })).then(() => setTimeout(refreshOwnership, 2000));
   },
   restoreServices: () => run("takeover", "Restoring services...", () => post("/api/agent/restore-services")),
   armouryHealth: () => run("diagnostics", "Checking Armoury health...", () => request("/api/diagnostics/armoury-health")),

@@ -55,7 +55,6 @@ std::vector<ProcessMatch> find_asus_lighting_processes() {
         "AsusCertService",
         "AuraWallpaperService",
         "Aura Wallpaper Service",
-        "Aura",
         "OpenRGB",
         "OpenAuraSDK",
     };
@@ -96,7 +95,6 @@ std::vector<ProcessMatch> find_asus_lighting_processes() {
 bool process_match_is_blocking(const ProcessMatch& process) {
     static const char* const blocking[] = {
         "LightingService",
-        "Aura",
         "OpenRGB",
         "OpenAuraSDK",
         "AuraWallpaperService",

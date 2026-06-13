@@ -29,20 +29,23 @@ MARKER_RE = re.compile(r"^[A-Z0-9_ -]{1,64}$")
 
 KNOWN_SERVICES = [
     "LightingService",
+    "Aura Wallpaper Service",
+    "ArmouryCrateService",
+    "Armoury Crate Service",
     "ArmouryCrate.Service",
-    "ArmouryCrate.UserSessionHelper",
-    "ArmourySocketServer",
-    "ArmourySwAgent",
-    "ArmouryHtmlDebugServer",
-    "asus_framework",
+    "asComSvc",
+    "ASUS Com Service",
     "AsusCertService",
-    "Aura",
+    "asus",
+    "asusm",
+    "AsusROGLSLService",
     "OpenRGB",
     "OpenAuraSDK",
 ]
 
 KNOWN_PROCESSES = [
     "ArmouryCrate",
+    "ArmouryCrate.Service",
     "ArmouryCrate.UserSessionHelper",
     "ArmourySocketServer",
     "ArmourySwAgent",
@@ -51,10 +54,50 @@ KNOWN_PROCESSES = [
     "AuraWallpaperService",
     "Aura Wallpaper Service",
     "LightingService",
-    "Aura",
     "OpenRGB",
     "OpenAuraSDK",
 ]
+
+TIER1_SERVICE_NAMES = {
+    "lightingservice",
+    "aura wallpaper service",
+}
+
+TIER1_PROCESS_NAMES = {
+    "lightingservice",
+    "aurawallpaperservice",
+    "aura wallpaper service",
+    "armourysocketserver",
+    "armouryswagent",
+    "armouryhtmldebugserver",
+    "openrgb",
+    "openaurasdk",
+}
+
+TIER2_SERVICE_NAMES = {
+    "armourycrateservice",
+    "armoury crate service",
+    "armourycrate.service",
+    "ascomsvc",
+    "asus com service",
+}
+
+TIER2_PROCESS_NAMES = {
+    "armourycrate",
+    "armourycrate.service",
+    "armourycrate.usersessionhelper",
+    "asus_framework",
+}
+
+NEVER_STOP_SERVICE_NAMES = {
+    "asuscertservice",
+}
+
+IGNORED_SERVICE_NAMES = {
+    "asus",
+    "asusm",
+    "asusroglslservice",
+}
 
 AUDIO_REACTIVE_SERVICES = [
     "Audiosrv",
@@ -77,7 +120,16 @@ AUDIO_REACTIVE_PROCESS_PATTERNS = [
 
 ARMOURY_HEALTH_SERVICES = [
     "LightingService",
+    "Aura Wallpaper Service",
+    "ArmouryCrateService",
+    "Armoury Crate Service",
+    "ArmouryCrate.Service",
+    "asComSvc",
+    "ASUS Com Service",
     "AsusCertService",
+    "asus",
+    "asusm",
+    "AsusROGLSLService",
     "Audiosrv",
     "AudioEndpointBuilder",
     "logi_lamparray_service",
@@ -97,13 +149,14 @@ ARMOURY_HEALTH_PROCESS_PATTERNS = [
 
 OWNERSHIP_PROCESS_NAMES = [
     "ArmouryCrate",
+    "ArmouryCrate.Service",
     "ArmouryCrate.UserSessionHelper",
     "ArmourySocketServer",
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
     "LightingService",
-    "Aura",
+    "AuraWallpaperService",
     "OpenRGB",
     "OpenAuraSDK",
 ]
@@ -289,6 +342,8 @@ class SylphieServer:
                         "suggestion": "Run takeover first",
                         "details": takeover,
                         "applied": False,
+                        "bus_write_ok": False,
+                        "visual_state": "unknown",
                     },
                 )
             if takeover.get("response", {}).get("cmd") == "takeover_check" and takeover.get("response", {}).get("error"):
@@ -299,6 +354,8 @@ class SylphieServer:
                         "error": "controller ownership check failed",
                         "details": takeover,
                         "applied": False,
+                        "bus_write_ok": False,
+                        "visual_state": "unknown",
                     },
                 )
 
@@ -314,6 +371,8 @@ class SylphieServer:
                     "suggestion": "Run takeover first",
                     "details": takeover,
                     "applied": False,
+                    "bus_write_ok": False,
+                    "visual_state": "unknown",
                 },
             )
         return (
@@ -323,6 +382,8 @@ class SylphieServer:
                 "error": "controller ownership check failed",
                 "details": takeover,
                 "applied": False,
+                "bus_write_ok": False,
+                "visual_state": "unknown",
             },
         )
 
@@ -338,11 +399,13 @@ class SylphieServer:
                     "command": command,
                     "exit_code": None,
                     "stdout": "",
-                    "stderr": "",
-                    "duration_ms": 0,
-                    "applied": False,
-                },
-            )
+                        "stderr": "",
+                        "duration_ms": 0,
+                        "applied": False,
+                        "bus_write_ok": False,
+                        "visual_state": "unknown",
+                    },
+                )
 
         try:
             with self.state_lock:
@@ -360,6 +423,8 @@ class SylphieServer:
                     "stderr": "",
                     "duration_ms": 0,
                     "applied": False,
+                    "bus_write_ok": False,
+                    "visual_state": "unknown",
                 }
                 with self.state_lock:
                     self.current_command = None
@@ -378,7 +443,9 @@ class SylphieServer:
                     return conflict
 
             result = self.run_backend(args, timeout_seconds=WRITE_TIMEOUT_SECONDS)
-            result["applied"] = result["ok"] and result["exit_code"] == 0
+            result["bus_write_ok"] = result["ok"] and result["exit_code"] == 0
+            result["visual_state"] = "unknown"
+            result["applied"] = False
             if not result["ok"] and "error" not in result:
                 result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
 
@@ -386,7 +453,7 @@ class SylphieServer:
                 self.current_command = None
                 self.last_command = command
                 self.last_result = result
-                if result["applied"]:
+                if result["bus_write_ok"]:
                     if rgb is not None:
                         self.last_rgb = rgb
                         self.last_scene = None
@@ -514,7 +581,7 @@ class SylphieServer:
         task_status = self.agent_task_status()
         probe = ownership_probe_snapshot()
         ownership_marker = read_ownership_marker(self.project_root)
-        derived = derive_ownership_mode(capture_running, agent_status, probe, ownership_marker.get("mode") == "sylphie")
+        derived = derive_ownership_mode(capture_running, agent_status, probe, ownership_marker.get("mode", "unknown"))
         return {
             "ok": probe.get("ok", False),
             **derived,
@@ -1108,9 +1175,48 @@ foreach ($name in $processNames) {{
 
 def ownership_probe_snapshot():
     process_list = ",".join(json.dumps(name) for name in OWNERSHIP_PROCESS_NAMES)
+    service_list = ",".join(json.dumps(name) for name in KNOWN_SERVICES)
     script = f"""
+$serviceNames = @({service_list})
 $processNames = @({process_list})
-$lighting = Get-CimInstance Win32_Service -Filter "Name='LightingService'" -ErrorAction SilentlyContinue
+$allServices = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)
+$services = @()
+$seenServices = @{{}}
+foreach ($name in $serviceNames) {{
+  $matches = @($allServices | Where-Object {{ $_.Name -eq $name -or $_.DisplayName -eq $name }})
+  if ($matches.Count -gt 0) {{
+    foreach ($svc in $matches) {{
+      if ($seenServices.ContainsKey($svc.Name)) {{ continue }}
+      $seenServices[$svc.Name] = $true
+      $services += [pscustomobject]@{{
+        name = $svc.Name
+        display_name = $svc.DisplayName
+        query = $name
+        exists = $true
+        state = $svc.State
+        status = $svc.Status
+        start_mode = $svc.StartMode
+        process_id = $svc.ProcessId
+        account = $svc.StartName
+        path = $svc.PathName
+      }}
+    }}
+  }} else {{
+    $services += [pscustomobject]@{{
+      name = $name
+      display_name = $null
+      query = $name
+      exists = $false
+      state = "not_found"
+      status = "not_found"
+      start_mode = $null
+      process_id = $null
+      account = $null
+      path = $null
+    }}
+  }}
+}}
+$lighting = $services | Where-Object {{ $_.name -eq "LightingService" }} | Select-Object -First 1
 $processes = @()
 foreach ($name in $processNames) {{
   Get-CimInstance Win32_Process -Filter ("Name='{{0}}.exe'" -f $name.Replace("'", "''")) -ErrorAction SilentlyContinue | ForEach-Object {{
@@ -1126,12 +1232,12 @@ foreach ($name in $processNames) {{
   captured_at = (Get-Date).ToString("o")
   lighting_service = $(if ($null -ne $lighting) {{
     [pscustomobject]@{{
-      exists = $true
+      exists = $lighting.exists
       state = $lighting.State
       status = $lighting.Status
-      process_id = $lighting.ProcessId
-      account = $lighting.StartName
-      path = $lighting.PathName
+      process_id = $lighting.process_id
+      account = $lighting.account
+      path = $lighting.path
     }}
   }} else {{
     [pscustomobject]@{{
@@ -1143,6 +1249,7 @@ foreach ($name in $processNames) {{
       path = $null
     }}
   }})
+  services = $services
   processes = $processes
 }} | ConvertTo-Json -Depth 6
 """
@@ -1189,39 +1296,105 @@ def write_ownership_marker(project_root, mode, reason):
         pass
 
 
+def takeover_last_result(payload):
+    response = (payload or {}).get("response") or {}
+    state = response.get("state") or {}
+    return state.get("last_result") or response.get("last_result") or response or payload or {}
+
+
+def takeover_made_changes(payload):
+    result = takeover_last_result(payload)
+    stopped = result.get("stopped_services") or []
+    killed = result.get("terminated_process_pids") or []
+    reports = result.get("reports") or []
+    return bool(stopped or killed or reports)
+
+
+def mark_takeover_result(project_root, payload, include_armoury_core):
+    if not payload.get("ok"):
+        return payload
+    result = takeover_last_result(payload)
+    manual = result.get("manual_action_required") or []
+    if manual:
+        payload["ownership_marker_written"] = False
+        payload["ownership_message"] = "Takeover cannot complete automatically because some blocking conflicts require manual action"
+        return payload
+    if not takeover_made_changes(payload):
+        write_ownership_marker(project_root, "takeover_noop", "takeover execute made no changes")
+        payload["ownership_marker_written"] = True
+        payload["ownership_mode"] = "takeover_noop"
+        payload["ownership_message"] = "Takeover made no changes. Armoury core still running. RGB writes remain blocked until full takeover or manual override."
+        return payload
+    mode = "sylphie_candidate" if include_armoury_core else "soft_takeover"
+    write_ownership_marker(project_root, mode, "takeover execute changed ownership candidates")
+    payload["ownership_marker_written"] = True
+    payload["ownership_mode"] = mode
+    return payload
+
+
 def process_base_names(probe):
     return sorted({str(item.get("base_name") or item.get("name") or "").lower() for item in (probe.get("processes") or [])})
 
 
+def running_service_names(probe):
+    running = set()
+    for item in probe.get("services") or []:
+        if not item.get("exists"):
+            continue
+        if str(item.get("state") or "").lower() != "running":
+            continue
+        name = str(item.get("name") or "").lower()
+        display_name = str(item.get("display_name") or "").lower()
+        if name:
+            running.add(name)
+        if display_name:
+            running.add(display_name)
+    return running
+
+
+def running_service_labels(probe, name_set):
+    labels = []
+    for item in probe.get("services") or []:
+        if not item.get("exists"):
+            continue
+        if str(item.get("state") or "").lower() != "running":
+            continue
+        name = str(item.get("name") or "")
+        display_name = str(item.get("display_name") or "")
+        if name.lower() in name_set or display_name.lower() in name_set:
+            labels.append(name if not display_name else f"{name} ({display_name})")
+    return sorted(set(labels))
+
+
 def warning_only_armoury_processes(probe):
     names = process_base_names(probe)
-    warning_names = {
-        "armourycrate",
-        "armourycrate.service",
-        "armourycrate.usersessionhelper",
-        "asus_framework",
-    }
-    return [name for name in names if name in warning_names]
+    return [name for name in names if name in TIER2_PROCESS_NAMES]
 
 
 def blocking_owner_processes_when_agent_offline(probe):
     names = process_base_names(probe)
-    blocking_names = {
-        "armourysocketserver",
-        "armouryswagent",
-        "armouryhtmldebugserver",
-        "aurawallpaperservice",
-        "aura wallpaper service",
-        "lightingservice",
-        "aura",
-        "openrgb",
-        "openaurasdk",
+    return [name for name in names if name in TIER1_PROCESS_NAMES]
+
+
+def takeover_marker_mode(marker_mode):
+    marker = str(marker_mode or "unknown").lower()
+    aliases = {
+        "sylphie": "sylphie_candidate",
+        "sylphie-candidate": "sylphie_candidate",
+        "sylphie_candidate": "sylphie_candidate",
+        "sylphie-verified": "sylphie_verified",
+        "sylphie_verified": "sylphie_verified",
+        "soft-takeover": "soft_takeover",
+        "soft_takeover": "soft_takeover",
+        "takeover-noop": "takeover_noop",
+        "takeover_noop": "takeover_noop",
     }
-    return [name for name in names if name in blocking_names]
+    return aliases.get(marker, marker)
 
 
-def derive_ownership_mode(capture_running, agent_status, probe, sylphie_mode_active):
+def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
     reasons = []
+    marker = takeover_marker_mode(marker_mode)
     agent_running = bool(agent_status.get("ok"))
     agent_response = agent_status.get("response") or {}
     agent_state = agent_response.get("state") or {}
@@ -1231,6 +1404,10 @@ def derive_ownership_mode(capture_running, agent_status, probe, sylphie_mode_act
     agent_warnings = agent_state.get("warnings") or []
     lighting = probe.get("lighting_service") or {}
     lighting_running = str(lighting.get("state") or "").lower() == "running"
+    running_services = running_service_names(probe)
+    tier1_services = running_service_labels(probe, TIER1_SERVICE_NAMES)
+    tier2_services = running_service_labels(probe, TIER2_SERVICE_NAMES)
+    ignored_services = running_service_labels(probe, IGNORED_SERVICE_NAMES)
     offline_blocking_processes = blocking_owner_processes_when_agent_offline(probe)
     warning_processes = warning_only_armoury_processes(probe)
     informational_processes = []
@@ -1278,32 +1455,69 @@ def derive_ownership_mode(capture_running, agent_status, probe, sylphie_mode_act
                 "warnings": agent_warnings,
                 "informational_processes": informational_processes,
             }
+        if tier1_services or offline_blocking_processes:
+            if tier1_services:
+                reasons.append("Tier1 lighting services running: " + ", ".join(tier1_services))
+            if offline_blocking_processes:
+                reasons.append("Tier1 lighting processes running: " + ", ".join(offline_blocking_processes))
+            return {
+                "mode": "conflict",
+                "reasons": reasons,
+                "write_allowed": False,
+                "blocking_conflicts": tier1_services + offline_blocking_processes,
+                "warnings": agent_warnings,
+                "informational_processes": ignored_services,
+            }
         if agent_warnings:
             reasons.append("Warning-only Armoury processes detected: " + "; ".join(agent_warnings))
+        if tier2_services:
+            reasons.append("Armoury core services still running: " + ", ".join(tier2_services))
         if warning_processes:
+            reasons.append("Warning-only Armoury processes detected: " + ", ".join(warning_processes))
             informational_processes = warning_processes
+        if ignored_services:
+            informational_processes = sorted(set(informational_processes + ignored_services))
         if any("ArmouryCrate.exe" in item or "ArmouryCrate " in item for item in agent_warnings):
             reasons.append("Armoury UI is still open.")
-        if agent_owner_status == "warning":
-            mode = "sylphie-warning" if sylphie_mode_active else "ready-warning"
+        tier2_running = bool(tier2_services or warning_processes)
+        if marker == "takeover_noop":
+            reasons.extend([
+                "Takeover made no changes",
+                "Armoury core still running",
+                "RGB writes remain blocked until full takeover or manual override",
+            ])
+            mode = "takeover-noop"
+            write_allowed = False
+        elif tier2_running:
+            mode = "soft-takeover" if marker in {"soft_takeover", "sylphie_candidate", "sylphie_verified"} else "ready-warning"
+            write_allowed = False
+        elif marker == "sylphie_verified":
+            mode = "sylphie-verified"
+            write_allowed = True
+        elif marker in {"sylphie_candidate", "soft_takeover"}:
+            mode = "sylphie-candidate"
+            write_allowed = True
         else:
-            mode = "sylphie" if sylphie_mode_active else "ready"
-        if not sylphie_mode_active:
+            mode = "ready-warning" if agent_owner_status == "warning" else "ready"
+            write_allowed = False
+        if not write_allowed and marker not in {"takeover_noop", "soft_takeover"}:
             reasons.append("Takeover for Sylphie has not completed in this session")
         return {
             "mode": mode,
             "reasons": reasons,
-            "write_allowed": bool(sylphie_mode_active),
+            "write_allowed": write_allowed,
             "blocking_conflicts": [],
-            "warnings": agent_warnings,
+            "warnings": sorted(set(agent_warnings + tier2_services + warning_processes)),
             "informational_processes": informational_processes,
         }
 
-    if lighting_running or offline_blocking_processes or warning_processes:
-        if lighting_running:
-            reasons.append("LightingService is running")
+    if lighting_running or tier1_services or offline_blocking_processes or warning_processes or tier2_services:
+        if lighting_running or tier1_services:
+            reasons.append("Tier1 lighting services running: " + ", ".join(tier1_services or ["LightingService"]))
         if offline_blocking_processes:
             reasons.append("Armoury owner processes detected: " + ", ".join(offline_blocking_processes))
+        if tier2_services:
+            reasons.append("Armoury core services running: " + ", ".join(tier2_services))
         if warning_processes:
             reasons.append("Warning-only Armoury processes detected: " + ", ".join(warning_processes))
         return {
@@ -1311,8 +1525,8 @@ def derive_ownership_mode(capture_running, agent_status, probe, sylphie_mode_act
             "reasons": reasons,
             "write_allowed": False,
             "blocking_conflicts": [],
-            "warnings": warning_processes,
-            "informational_processes": [],
+            "warnings": sorted(set(tier2_services + warning_processes)),
+            "informational_processes": ignored_services,
         }
 
     reasons.append("no clear Armoury or Sylphie owner detected")
@@ -1332,13 +1546,19 @@ def armoury_health_snapshot():
     script = f"""
 $serviceNames = @({service_list})
 $processPatterns = @({pattern_list})
+$allServices = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)
 $services = @()
+$seenServices = @{{}}
 foreach ($name in $serviceNames) {{
-  $svc = Get-CimInstance Win32_Service -Filter ("Name='{{0}}'" -f $name.Replace("'", "''")) -ErrorAction SilentlyContinue
-  if ($null -ne $svc) {{
+  $matches = @($allServices | Where-Object {{ $_.Name -eq $name -or $_.DisplayName -eq $name }})
+  if ($matches.Count -gt 0) {{
+    foreach ($svc in $matches) {{
+    if ($seenServices.ContainsKey($svc.Name)) {{ continue }}
+    $seenServices[$svc.Name] = $true
     $services += [pscustomobject]@{{
       name = $svc.Name
       display_name = $svc.DisplayName
+      query = $name
       exists = $true
       state = $svc.State
       status = $svc.Status
@@ -1347,10 +1567,12 @@ foreach ($name in $serviceNames) {{
       account = $svc.StartName
       path = $svc.PathName
     }}
+    }}
   }} else {{
     $services += [pscustomobject]@{{
       name = $name
       display_name = $null
+      query = $name
       exists = $false
       state = "not_found"
       status = "not_found"
@@ -1763,15 +1985,15 @@ def make_handler(server_state):
                     result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])
                     status = 200 if result["ok"] else 503
                 elif path == "/api/agent/takeover-execute" or path == "/api/services/takeover/execute":
+                    include_armoury_core = bool(body.get("include_armoury_core", False))
                     payload = {
                         "id": str(uuid.uuid4()),
                         "cmd": "takeover_execute",
                         "i_accept_stopping_lighting_services": bool(body.get("i_accept_stopping_lighting_services", False)),
-                        "include_armoury_core": bool(body.get("include_armoury_core", False)),
+                        "include_armoury_core": include_armoury_core,
                     }
                     result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
-                    if result.get("ok"):
-                        write_ownership_marker(server_state.project_root, "sylphie", "agent takeover_execute succeeded")
+                    result = mark_takeover_result(server_state.project_root, result, include_armoury_core)
                     status = 200 if result["ok"] else 500
                 elif path == "/api/agent/restore-services" or path == "/api/services/restore" or path == "/api/restore-services":
                     result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "restore_services"}, timeout_seconds=10, command=["agent", "restore_services"])
@@ -1807,6 +2029,10 @@ def make_handler(server_state):
                         include_armoury_core=bool(body.get("include_armoury_core", False)),
                     )
                     status = 200 if result["ok"] else 500
+                elif path == "/api/ownership/mark-verified":
+                    write_ownership_marker(server_state.project_root, "sylphie_verified", "direct RGB sanity test visually confirmed")
+                    result = {"ok": True, "mode": "sylphie_verified"}
+                    status = 200
                 elif path == "/api/diagnostics/audio-reactive/restart-lighting":
                     status, result = server_state.run_audio_reactive_action("restart-lighting-service")
                 elif path == "/api/diagnostics/audio-reactive/restart-windows-audio":
@@ -1825,15 +2051,15 @@ def make_handler(server_state):
                 elif path == "/api/takeover":
                     execute = bool(body.get("execute", False))
                     if execute:
+                        include_armoury_core = bool(body.get("include_armoury_core", False))
                         payload = {
                             "id": str(uuid.uuid4()),
                             "cmd": "takeover_execute",
                             "i_accept_stopping_lighting_services": bool(body.get("accept", False)),
-                            "include_armoury_core": bool(body.get("include_armoury_core", False)),
+                            "include_armoury_core": include_armoury_core,
                         }
                         result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
-                        if result.get("ok"):
-                            write_ownership_marker(server_state.project_root, "sylphie", "agent takeover_execute succeeded")
+                        result = mark_takeover_result(server_state.project_root, result, include_armoury_core)
                     else:
                         payload = {"id": str(uuid.uuid4()), "cmd": "takeover_dry_run", "include_armoury_core": bool(body.get("include_armoury_core", False))}
                         result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])
