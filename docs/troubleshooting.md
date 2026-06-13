@@ -35,6 +35,10 @@ src\native\sylphie_agent\build.bat
 
 This does not touch the SMBus hardware path; it only stops the Sylphie agent process/Scheduled Task.
 
+## Doctor Fails Loading inpout32.dll
+
+If `doctor` finds `bin\inpout32.dll` but then fails with `%1 is not a valid Win32 application`, the DLL exists but its architecture does not match the Sylphie executable. Sylphie currently targets x86 to match the x86 `inpout32.dll`, so rebuild with the native `build.bat` scripts and verify both files are x86.
+
 ## Dashboard Works Randomly
 
 The dashboard calls the native CLI synchronously and serializes hardware commands. Random behavior usually means another controller is also touching the Aura/ENE device.

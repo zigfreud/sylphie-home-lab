@@ -70,7 +70,7 @@ Scene details are documented in `docs/scenes.md`.
 
 ## Build
 
-Build from the x86 Native Tools Command Prompt for Visual Studio 2019:
+Build with the Visual Studio C++ Build Tools. The native hardware binaries intentionally target x86 to match `bin\inpout32.dll`; the build scripts auto-load the x86 MSVC environment when possible and pass `/MACHINE:X86`.
 
 ```bat
 src\native\sylphie_rgb\build.bat
@@ -95,6 +95,7 @@ If `sylphie_agent.exe` is already running, stop it before rebuilding:
 ## Runtime Dependency
 
 `inpout32.dll` is required next to the executable but is not committed to the repository.
+Use the x86 InpOut DLL with these binaries. If `doctor` reports `%1 is not a valid Win32 application`, the executable and DLL architectures do not match.
 
 ## Local API / Dashboard
 
