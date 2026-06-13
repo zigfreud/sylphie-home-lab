@@ -54,6 +54,8 @@ const TakeoverRule kTakeoverRules[] = {
     {"ArmourySocketServer", true, true, TakeoverTier::Tier1},
     {"ArmourySwAgent", true, true, TakeoverTier::Tier1},
     {"ArmouryHtmlDebugServer", true, true, TakeoverTier::Tier1},
+    {"AuraWallpaperService", true, true, TakeoverTier::Tier1},
+    {"Aura Wallpaper Service", true, true, TakeoverTier::Tier1},
     {"Aura", true, true, TakeoverTier::Tier1},
     {"OpenRGB", false, true, TakeoverTier::Tier1},
     {"OpenAuraSDK", false, true, TakeoverTier::Tier1},
@@ -342,6 +344,45 @@ std::string targets_json_array(const std::vector<TakeoverTarget>& targets) {
     return out.str();
 }
 
+std::string conflict_rule_name(const std::string& conflict) {
+    const std::string marker = " rule=";
+    const size_t pos = conflict.find(marker);
+    if (pos == std::string::npos) {
+        return "";
+    }
+    return conflict.substr(pos + marker.size());
+}
+
+const TakeoverTarget* find_target_by_name(const std::vector<TakeoverTarget>& targets, const std::string& name) {
+    const std::string lower_name = lower_ascii(name);
+    for (const auto& target : targets) {
+        if (lower_ascii(target.name) == lower_name) {
+            return &target;
+        }
+    }
+    return nullptr;
+}
+
+bool target_has_automatic_action(const TakeoverTarget& target) {
+    return target.allowed_to_stop &&
+           ((target.service && target.service_exists && target.service_running) ||
+            (target.process && !target.pids.empty()));
+}
+
+std::vector<std::string> manual_action_required_for_blockers(
+    const std::vector<std::string>& blocking_conflicts,
+    const std::vector<TakeoverTarget>& targets) {
+    std::vector<std::string> manual;
+    for (const auto& conflict : blocking_conflicts) {
+        const std::string rule_name = conflict_rule_name(conflict);
+        const TakeoverTarget* target = find_target_by_name(targets, rule_name);
+        if (target == nullptr || !target_has_automatic_action(*target)) {
+            manual.push_back(conflict);
+        }
+    }
+    return manual;
+}
+
 bool stop_service_by_name(SC_HANDLE scm, const std::string& service_name, std::string& report) {
     SC_HANDLE service = OpenServiceA(scm, service_name.c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (service == nullptr) {
@@ -604,8 +645,10 @@ std::string HardwareController::service_status_json() {
 
 std::string HardwareController::takeover_dry_run_json(bool include_armoury_core) {
     const auto targets = collect_takeover_targets(include_armoury_core, true);
+    const auto ownership = current_ownership_conflicts();
     std::vector<std::string> stop_services_first;
     std::vector<std::string> terminate_processes_after;
+    std::vector<std::string> manual_action_required;
     std::vector<std::string> warn_only;
 
     for (const auto& target : targets) {
@@ -620,16 +663,24 @@ std::string HardwareController::takeover_dry_run_json(bool include_armoury_core)
             warn_only.push_back(target.name);
         }
     }
+    manual_action_required = manual_action_required_for_blockers(ownership.blocking_conflicts, targets);
+    {
+        std::lock_guard<std::mutex> lock(conflict_mutex_);
+        last_blocking_conflicts_ = ownership.blocking_conflicts;
+        last_warnings_ = ownership.warnings;
+    }
 
     std::ostringstream out;
     out << "{"
-        << "\"ok\":true,"
+        << "\"ok\":" << (manual_action_required.empty() ? "true" : "false") << ","
         << "\"mode\":\"dry-run\","
         << "\"message\":\"LightingService will be stopped first when present. AsusCertService is warning-only and will not be stopped by default.\","
         << "\"include_armoury_core\":" << (include_armoury_core ? "true" : "false") << ","
         << "\"targets\":" << targets_json_array(targets) << ","
+        << "\"blocking_conflicts\":" << json_array(ownership.blocking_conflicts) << ","
         << "\"stop_services_first\":" << json_array(stop_services_first) << ","
         << "\"terminate_processes_after\":" << json_array(terminate_processes_after) << ","
+        << "\"manual_action_required\":" << json_array(manual_action_required) << ","
         << "\"warnings_only\":" << json_array(warn_only)
         << "}";
     return out.str();

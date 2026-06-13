@@ -51,6 +51,8 @@ function Get-AgentStatusObject {
         task_last_run_time = $(if ($null -ne $taskInfo) { $taskInfo.LastRunTime.ToString("o") } else { $null })
         task_last_result = $(if ($null -ne $taskInfo) { $taskInfo.LastTaskResult } else { $null })
         running = ($pingOk -or $processes.Count -gt 0)
+        agent_process_running = ($pingOk -or $processes.Count -gt 0)
+        pipe_responding = $pingOk
         task_running = ($null -ne $task -and $task.State -eq "Running")
         pids = @($processes | ForEach-Object { $_.ProcessId })
         elevated = $(if ($null -ne $agentState) { [bool]$agentState.is_elevated } else { $null })

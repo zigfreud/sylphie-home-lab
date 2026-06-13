@@ -88,6 +88,8 @@ const TakeoverRule kTakeoverRules[] = {
     {"ArmourySocketServer", true, true, TakeoverTier::Tier1},
     {"ArmourySwAgent", true, true, TakeoverTier::Tier1},
     {"ArmouryHtmlDebugServer", true, true, TakeoverTier::Tier1},
+    {"AuraWallpaperService", true, true, TakeoverTier::Tier1},
+    {"Aura Wallpaper Service", true, true, TakeoverTier::Tier1},
     {"Aura", true, true, TakeoverTier::Tier1},
     {"OpenRGB", false, true, TakeoverTier::Tier1},
     {"OpenAuraSDK", false, true, TakeoverTier::Tier1},

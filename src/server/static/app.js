@@ -123,8 +123,15 @@ function show(panel, payload) {
 
 function updateConflictAlert(payload) {
   const state = payload?.response?.state || payload?.state || payload?.agent_status?.response?.state;
+  const lastResult = payload?.response?.state?.last_result || payload?.response || payload;
+  const manual = lastResult?.manual_action_required || payload?.manual_action_required || [];
   const blockers = state?.blocking_conflicts || payload?.blocking_conflicts || payload?.response?.state?.last_result?.blocking_conflicts;
   const warnings = state?.warnings || payload?.warnings || payload?.response?.state?.last_result?.warnings;
+  if (manual && manual.length) {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = `Takeover cannot complete automatically because some blocking conflicts require manual action: ${manual.join(", ")}`;
+    return;
+  }
   if ((blockers && blockers.length) || payload?.error === "controller conflict detected") {
     conflictAlert.hidden = false;
     conflictAlert.textContent = `Blocking conflicts: ${(blockers || []).join(", ") || payload.error}. Run takeover first.`;
@@ -161,7 +168,8 @@ function updateAgentTaskSummary(payload) {
     ["Task exists", String(payload.task_exists)],
     ["Task enabled", String(payload.task_enabled)],
     ["Task state", payload.task_state || "unknown"],
-    ["Agent running", String(payload.running)],
+    ["Agent process running", String(payload.agent_process_running ?? payload.running)],
+    ["Pipe responding", String(payload.pipe_responding ?? payload.agent_ping)],
     ["PID", (payload.pids || []).join(", ") || "none"],
     ["Elevated", String(payload.elevated)],
   ];

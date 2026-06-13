@@ -48,6 +48,8 @@ KNOWN_PROCESSES = [
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
+    "AuraWallpaperService",
+    "Aura Wallpaper Service",
     "LightingService",
     "Aura",
     "OpenRGB",
@@ -88,6 +90,8 @@ ARMOURY_HEALTH_PROCESS_PATTERNS = [
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
+    "AuraWallpaperService",
+    "Aura Wallpaper Service",
     "logi_download_assistant*",
 ]
 
@@ -1170,6 +1174,8 @@ def derive_ownership_mode(capture_running, agent_status, probe):
             "armouryswagent",
             "armouryhtmldebugserver",
             "asus_framework",
+            "aurawallpaperservice",
+            "aura wallpaper service",
             "lightingservice",
             "aura",
             "openrgb",
