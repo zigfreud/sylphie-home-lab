@@ -80,6 +80,8 @@ void print_help() {
         << "  sylphie_agent.exe --client takeover-execute --i-accept-stopping-lighting-services\n"
         << "  sylphie_agent.exe --client restore-services\n"
         << "  sylphie_agent.exe --client set FF0000\n"
+        << "  sylphie_agent.exe --client direct-v2-set FF0000\n"
+        << "  sylphie_agent.exe --client direct-v2-reprime-set FF0000\n"
         << "  sylphie_agent.exe --client scene movie\n"
         << "  sylphie_agent.exe --client off\n"
         << "  sylphie_agent.exe --client recover\n"
@@ -153,6 +155,12 @@ std::string build_client_request(const std::vector<std::string>& args) {
     }
     if (command == "set" && args.size() == 2) {
         return make_request_json(id, "set", "rgb", args[1]);
+    }
+    if (command == "direct-v2-set" && args.size() == 2) {
+        return make_request_json(id, "direct_v2_set", "rgb", args[1]);
+    }
+    if (command == "direct-v2-reprime-set" && args.size() == 2) {
+        return make_request_json(id, "direct_v2_reprime_set", "rgb", args[1]);
     }
     if (command == "scene" && args.size() == 2) {
         return make_request_json(id, "scene", "name", args[1]);
@@ -257,15 +265,28 @@ private:
             if (!parse_rgb_hex(request.rgb, color)) {
                 throw std::runtime_error("rgb must be exactly 6 hex characters");
             }
-            hardware_.set_rgb(color);
+            const std::string result = hardware_.set_rgb_json(color, "agent.set");
             state_.set_rgb(rgb_to_hex(color));
-            return "{\"applied_rgb\":" + json_string(rgb_to_hex(color)) + "}";
+            return result;
+        }
+        if (request.cmd == "direct_v2_set" || request.cmd == "direct_v2_reprime_set") {
+            RgbColor color;
+            if (!parse_rgb_hex(request.rgb, color)) {
+                throw std::runtime_error("rgb must be exactly 6 hex characters");
+            }
+            const bool re_prime = request.cmd == "direct_v2_reprime_set";
+            const std::string result = hardware_.direct_v2_set_json(
+                color,
+                re_prime,
+                re_prime ? "agent.direct_v2_reprime_set" : "agent.direct_v2_set");
+            state_.set_rgb(rgb_to_hex(color));
+            return result;
         }
         if (request.cmd == "off") {
-            hardware_.off();
+            const std::string result = hardware_.off_json("agent.off");
             state_.set_rgb("000000");
             state_.set_scene("off");
-            return "{\"applied_rgb\":\"000000\"}";
+            return result;
         }
         if (request.cmd == "recover") {
             hardware_.recover();
@@ -284,10 +305,10 @@ private:
         }
         if (request.cmd == "scene") {
             RgbColor color;
-            hardware_.scene(request.name, color);
+            const std::string result = hardware_.scene_json(request.name, color);
             state_.set_rgb(rgb_to_hex(color));
             state_.set_scene(request.name);
-            return "{\"scene\":" + json_string(request.name) + ",\"applied_rgb\":" + json_string(rgb_to_hex(color)) + "}";
+            return result;
         }
         if (request.cmd == "shutdown") {
             stop_requested_.store(true);

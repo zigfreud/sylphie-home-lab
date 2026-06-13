@@ -63,7 +63,19 @@
           <button data-action="setColor" data-owner-required="sylphie" type="button">Set color</button>
           <button data-action="off" data-owner-required="sylphie" type="button">Off</button>
           <button data-action="directSanityTest" data-owner-required="sanity" type="button">Direct RGB sanity test</button>
+          <span>Direct V2 raw test:</span>
+          <button data-action="directV2Off" data-owner-required="sanity" type="button">Direct V2 off</button>
+          <button data-action="directV2Blue" data-owner-required="sanity" type="button">Direct V2 blue</button>
+          <button data-action="directV2Green" data-owner-required="sanity" type="button">Direct V2 green</button>
+          <button data-action="directV2Red" data-owner-required="sanity" type="button">Direct V2 red</button>
+          <button data-action="directV2White" data-owner-required="sanity" type="button">Direct V2 white</button>
+          <button data-action="reprimeDirectMode" data-owner-required="sanity" type="button">Re-prime direct mode</button>
           <span id="lastRgb">Last RGB: unknown</span>
+        </div>
+        <div class="notice">
+          Path compare: Set color calls <code>/api/set → agent.set → HardwareController::set_rgb</code>;
+          Direct V2 raw test calls <code>/api/lights/direct-v2 → agent.direct_v2_set</code>;
+          scenes call <code>/api/scene → agent.scene → HardwareController::scene_json</code>.
         </div>
         <div id="sceneButtons" class="button-grid"></div>
         <div class="result-card">

@@ -144,6 +144,8 @@ The Control Center shows the current owner at the top:
 - `Research`: a read-only capture probe is running. SMBus writes are blocked.
 - `Conflict` / `Unknown`: ownership is ambiguous. SMBus writes are blocked until the user resolves ownership.
 
+`Sylphie Candidate` is not proof of physical LED control. The direct sanity test now uses the explicit Direct V2 path only: `0x8020=01`, `0x80A0=01`, block RGB write to `0x8101` in `R G B` order, then final `0x80A0=01`. The UI returns the technical trace (`path_used`, registers, payload, bus status before/after, write steps, and `bus_write_ok`) and keeps normal writes blocked unless the user visually confirms red/green/blue/off.
+
 The Control Center has these tabs:
 
 - `Lights`: scenes, color picker, off, last RGB, and last command result.

@@ -420,8 +420,13 @@ class SylphieServer:
                     return conflict
 
             result = self.run_backend(args, timeout_seconds=WRITE_TIMEOUT_SECONDS)
-            result["bus_write_ok"] = result["ok"] and result["exit_code"] == 0
+            trace = agent_trace_from_backend_result(result)
+            if trace:
+                result["trace"] = trace
+                copy_trace_fields(result, trace)
+            result["bus_write_ok"] = bool(trace.get("bus_write_ok")) if trace else (result["ok"] and result["exit_code"] == 0)
             result["visual_state"] = "unknown"
+            result["visual_verified"] = False
             result["applied"] = False
             if not result["ok"] and "error" not in result:
                 result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
@@ -438,6 +443,94 @@ class SylphieServer:
                         self.last_scene = scene
                     if scene == "off":
                         self.last_rgb = "000000"
+
+            return (200 if result["ok"] else 500, result)
+        finally:
+            with self.state_lock:
+                if self.current_command == command:
+                    self.current_command = None
+            self.hardware_lock.release()
+
+    def run_direct_v2_command(self, rgb, re_prime=False):
+        agent_cmd = "direct_v2_reprime_set" if re_prime else "direct_v2_set"
+        command = ["agent", agent_cmd, rgb]
+        acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
+        if not acquired:
+            return (
+                409,
+                {
+                    "ok": False,
+                    "error": "hardware busy",
+                    "command": command,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 0,
+                    "applied": False,
+                    "bus_write_ok": False,
+                    "visual_verified": False,
+                    "visual_state": "unknown",
+                },
+            )
+
+        try:
+            with self.state_lock:
+                self.current_command = command
+
+            ownership = self.ownership_status()
+            if not ownership.get("write_allowed") and not ownership.get("sanity_write_allowed"):
+                result = {
+                    "ok": False,
+                    "error": "Direct V2 writes are blocked until clean ownership is claimed or Sylphie is verified",
+                    "ownership": ownership,
+                    "command": command,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 0,
+                    "applied": False,
+                    "bus_write_ok": False,
+                    "visual_verified": False,
+                    "visual_state": "unknown",
+                }
+                with self.state_lock:
+                    self.current_command = None
+                    self.last_command = command
+                    self.last_result = result
+                return 409, result
+
+            takeover = self.takeover_check()
+            conflict = self.controller_conflict_response(takeover)
+            if conflict is not None:
+                with self.state_lock:
+                    self.current_command = None
+                    self.last_command = command
+                    self.last_result = conflict[1]
+                return conflict
+
+            payload = {"id": str(uuid.uuid4()), "cmd": agent_cmd, "rgb": rgb}
+            result = self.run_agent_payload(payload, timeout_seconds=WRITE_TIMEOUT_SECONDS, command=command)
+            trace = agent_trace_from_backend_result(result)
+            if trace:
+                result["trace"] = trace
+                copy_trace_fields(result, trace)
+            result["bus_write_ok"] = bool(trace.get("bus_write_ok")) if trace else False
+            result["visual_state"] = "unknown"
+            result["visual_verified"] = False
+            result["applied"] = False
+            if not result["ok"] and "error" not in result:
+                result["error"] = result["stderr"] or result["stdout"] or "agent direct_v2 command failed"
+            if result["ok"] and not trace:
+                result["ok"] = False
+                result["error"] = "agent direct_v2 command did not return required trace"
+
+            with self.state_lock:
+                self.current_command = None
+                self.last_command = command
+                self.last_result = result
+                if result["bus_write_ok"]:
+                    self.last_rgb = rgb
+                    self.last_scene = None
 
             return (200 if result["ok"] else 500, result)
         finally:
@@ -1033,6 +1126,43 @@ def summarize_for_log(result):
     return copy
 
 
+RGB_TRACE_FIELDS = (
+    "path_used",
+    "function_used",
+    "register_rgb",
+    "payload_order",
+    "payload_hex",
+    "direct_mode_register",
+    "apply_register",
+    "bus_status_before",
+    "bus_status_after",
+    "write_steps",
+    "bus_write_ok",
+    "visual_verified",
+    "visual_state",
+    "re_prime",
+)
+
+
+def agent_trace_from_backend_result(result):
+    response = (result or {}).get("response") or {}
+    state = response.get("state") or {}
+    last_result = state.get("last_result")
+    if isinstance(last_result, dict):
+        return last_result
+    if isinstance(response.get("last_result"), dict):
+        return response.get("last_result")
+    return {}
+
+
+def copy_trace_fields(target, trace):
+    for key in RGB_TRACE_FIELDS:
+        if key in trace:
+            target[key] = trace[key]
+    if "duration_ms" in trace:
+        target["trace_duration_ms"] = trace["duration_ms"]
+
+
 def cli_args_to_agent_payload(args):
     if not args:
         return None
@@ -1055,6 +1185,14 @@ def cli_args_to_agent_payload(args):
         return payload
     if command == "set" and len(args) == 2:
         payload["cmd"] = "set"
+        payload["rgb"] = args[1]
+        return payload
+    if command == "direct-v2-set" and len(args) == 2:
+        payload["cmd"] = "direct_v2_set"
+        payload["rgb"] = args[1]
+        return payload
+    if command == "direct-v2-reprime-set" and len(args) == 2:
+        payload["cmd"] = "direct_v2_reprime_set"
         payload["rgb"] = args[1]
         return payload
     if command == "scene" and len(args) == 2:
@@ -2112,11 +2250,17 @@ def make_handler(server_state):
                     status, result = server_state.run_hardware_command(["scene", name], scene=name)
                 elif path == "/api/off":
                     status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off")
+                elif path == "/api/lights/direct-v2":
+                    rgb = normalize_rgb(body.get("rgb"))
+                    status, result = server_state.run_direct_v2_command(rgb, re_prime=False)
+                elif path == "/api/lights/direct-v2-reprime":
+                    rgb = normalize_rgb(body.get("rgb"))
+                    status, result = server_state.run_direct_v2_command(rgb, re_prime=True)
                 elif path == "/api/sanity/set":
                     rgb = normalize_rgb(body.get("rgb"))
-                    status, result = server_state.run_hardware_command(["set", rgb], rgb=rgb, allow_sanity=True)
+                    status, result = server_state.run_direct_v2_command(rgb, re_prime=False)
                 elif path == "/api/sanity/off":
-                    status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off", allow_sanity=True)
+                    status, result = server_state.run_direct_v2_command("000000", re_prime=False)
                 elif path == "/api/recover":
                     status, result = server_state.run_hardware_command(["recover"], check_takeover=False)
                 elif path == "/api/recover-set":

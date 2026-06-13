@@ -111,6 +111,19 @@ The Control Center reports these ownership modes:
 
 Armoury updates may leave multiple Armoury service generations present. Treat `ArmouryCrateService`, legacy `ArmouryCrate.Service`, and `asComSvc` as tier2 Armoury core. They are warnings during soft takeover and are stopped only by full takeover with the explicit `Close Armoury UI/helpers during takeover` checkbox. `AsusCertService` is never stopped by default; `asus`, `asusm`, and `AsusROGLSLService` are ignored update/download services by default.
 
+### Sylphie Candidate But LEDs Do Not Change
+
+If ownership is `Sylphie Candidate` and the direct sanity test reports `bus_write_ok=true`, but the LED strip does not physically change, do not mark the machine `Sylphie Verified`. Treat it as a real visual-control failure: `Hardware path regression or controller state issue`.
+
+The sanity path must be `direct_v2_8101` only:
+
+1. select `0x8020`, byte write `0x01`;
+2. select `0x80A0`, byte write `0x01`;
+3. select `0x8101`, block write length `3`, payload order `R G B`;
+4. select `0x80A0`, byte write `0x01`.
+
+Use the `Direct V2 raw test` buttons for off/blue/green/red/white and inspect `path_used`, `register_rgb`, `payload_hex`, `bus_status_before`, `bus_status_after`, `write_steps`, and `bus_write_ok`. If bus writes succeed but visual verification fails, keep normal RGB writes and scenes blocked. The experimental `Re-prime direct mode` button repeats only the same direct-on/apply/direct-v2/final-apply sequence; it does not introduce new registers.
+
 If takeover execute makes no changes while tier1 and tier2 owners are already stopped, treat the environment as already clean, not as a failed no-op. Use `Claim clean ownership`, then run the direct sanity test. Do not show `Armoury core still running` unless a tier2 service is actually `Running`/has a PID or a tier2 helper process exists.
 
 Logitech Download Assistant process storms are external diagnostic noise. They do not affect Armoury/Sylphie ownership. Use `Stop Logitech LampArray temporarily` to stop `logi_lamparray_service` and kill `logi_download_assistant*` without changing `StartupType`; use `Set Logitech LampArray to Manual` only as an explicit advanced action.

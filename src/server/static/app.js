@@ -149,6 +149,11 @@ function updateConflictAlert(payload) {
     conflictAlert.textContent = payload.output_encoding_warning || payload.command_result.output_encoding_warning;
     return;
   }
+  if (payload?.detail === "Hardware path regression or controller state issue") {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = payload.detail;
+    return;
+  }
   if (manual && manual.length) {
     conflictAlert.hidden = false;
     conflictAlert.textContent = `Takeover cannot complete automatically because some blocking conflicts require manual action: ${manual.join(", ")}`;
@@ -406,7 +411,7 @@ async function run(panel, label, fn) {
     const payload = await fn();
     show(panel, payload);
     finalStatus = payload.bus_write_ok && payload.visual_state === "unknown"
-      ? "SMBus write completed. Visual change not verified."
+      ? "Bus write OK, visual not verified."
       : (payload.ok ? "Done" : "Error");
     return payload;
   } catch (error) {
@@ -530,21 +535,42 @@ async function directSanityTest() {
     ["off", "000000"],
   ];
   for (const [label, rgb] of steps) {
-    const payload = label === "off" ? await post("/api/sanity/off", {}) : await post("/api/sanity/set", {rgb});
+    const payload = await post("/api/lights/direct-v2", {rgb});
     show("lights", payload);
     if (!payload.ok || !payload.bus_write_ok) {
       statusText.textContent = "Direct sanity test stopped: SMBus write failed.";
       return payload;
     }
-    statusText.textContent = "SMBus write completed. Visual change not verified.";
+    statusText.textContent = "Bus write OK, visual not verified.";
     if (!window.confirm(`Did the LEDs visually change to ${label}?`)) {
-      return {ok: false, error: `visual confirmation failed for ${label}`};
+      return {
+        ok: false,
+        error: `visual verification failed for ${label}`,
+        detail: "Hardware path regression or controller state issue",
+        bus_write_ok: true,
+        visual_verified: false,
+        visual_state: "failed",
+        path_used: payload.path_used || "direct_v2_8101",
+        trace: payload.trace || payload,
+      };
     }
   }
   const verified = await post("/api/ownership/mark-verified", {});
   show("lights", verified);
   await refreshOwnership();
   return verified;
+}
+
+async function directV2RawTest(label, rgb, rePrime = false) {
+  lastRequestedRgb = rgb;
+  lastRgb.textContent = `Last RGB: ${lastRequestedRgb}`;
+  const path = rePrime ? "/api/lights/direct-v2-reprime" : "/api/lights/direct-v2";
+  const payload = await post(path, {rgb});
+  if (payload.bus_write_ok && !payload.visual_verified) {
+    payload.message = "Bus write OK, visual not verified";
+  }
+  payload.direct_v2_color = label;
+  return payload;
 }
 
 const actions = {
@@ -586,6 +612,12 @@ const actions = {
   },
   off: () => setScene("off"),
   directSanityTest: () => run("lights", "Running direct sanity test...", directSanityTest),
+  directV2Off: () => run("lights", "Direct V2 off...", () => directV2RawTest("off", "000000")),
+  directV2Blue: () => run("lights", "Direct V2 blue...", () => directV2RawTest("blue", "0000FF")),
+  directV2Green: () => run("lights", "Direct V2 green...", () => directV2RawTest("green", "00FF00")),
+  directV2Red: () => run("lights", "Direct V2 red...", () => directV2RawTest("red", "FF0000")),
+  directV2White: () => run("lights", "Direct V2 white...", () => directV2RawTest("white", "FFFFFF")),
+  reprimeDirectMode: () => run("lights", "Re-priming direct mode...", () => directV2RawTest("re-prime", lastRequestedRgb || "FF0000", true)),
   agentPing: () => run("agent", "Pinging agent...", () => post("/api/agent/ping")),
   agentStatus: () => run("agent", "Loading agent status...", () => request("/api/agent/status")),
   agentTaskStatus: () => run("agent", "Loading task status...", () => request("/api/agent/task/status")),

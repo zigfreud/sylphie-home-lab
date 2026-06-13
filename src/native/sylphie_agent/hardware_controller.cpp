@@ -81,6 +81,19 @@ std::string hex_byte(uint8_t value) {
     return out;
 }
 
+std::string hex_word(uint16_t value) {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex;
+    out.width(4);
+    out.fill('0');
+    out << static_cast<int>(value);
+    return out.str();
+}
+
+std::string rgb_payload_hex(const RgbColor& color) {
+    return hex_byte(color.r) + hex_byte(color.g) + hex_byte(color.b);
+}
+
 OwnershipConflicts current_ownership_conflicts() {
     return classify_process_matches(find_asus_lighting_processes());
 }
@@ -885,16 +898,77 @@ void HardwareController::refresh_ownership() {
 }
 
 void HardwareController::set_rgb(const RgbColor& color) {
+    (void)set_rgb_json(color, "HardwareController::set_rgb");
+}
+
+std::string HardwareController::set_rgb_json(const RgbColor& color, const std::string& function_used) {
+    return direct_v2_set_json(color, false, function_used);
+}
+
+std::string HardwareController::direct_v2_set_json(const RgbColor& color, bool re_prime, const std::string& function_used) {
     std::lock_guard<std::mutex> lock(hardware_mutex_);
     refuse_if_conflicted();
+    const ULONGLONG start_ms = GetTickCount64();
     Piix4Smbus smbus;
+    const uint8_t bus_status_before = smbus.host_status();
     AuraEne aura(smbus);
-    aura.set_rgb(color.r, color.g, color.b);
+    std::vector<std::string> write_steps;
+
+    if (re_prime) {
+        aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
+        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kDirectModeRegister));
+        write_steps.push_back("re-prime: byte write 0x01");
+        aura.apply();
+        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kApplyRegister));
+        write_steps.push_back("re-prime: byte write 0x01");
+    }
+
+    aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
+    write_steps.push_back("select " + hex_word(AuraEne::kDirectModeRegister));
+    write_steps.push_back("byte write 0x01");
+    aura.apply();
+    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
+    write_steps.push_back("byte write 0x01");
+    aura.write_block3(AuraEne::kRgbDirectRegister, color.r, color.g, color.b);
+    write_steps.push_back("select " + hex_word(AuraEne::kRgbDirectRegister));
+    write_steps.push_back("block write len=3 payload RGB");
+    aura.apply();
+    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
+    write_steps.push_back("byte write 0x01");
+
+    const uint8_t bus_status_after = smbus.host_status();
+    const ULONGLONG duration_ms = GetTickCount64() - start_ms;
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"function_used\":" << json_string(function_used) << ","
+        << "\"path_used\":\"direct_v2_8101\","
+        << "\"register_rgb\":" << json_string(hex_word(AuraEne::kRgbDirectRegister)) << ","
+        << "\"payload_order\":\"R G B\","
+        << "\"payload_hex\":" << json_string(rgb_payload_hex(color)) << ","
+        << "\"direct_mode_register\":" << json_string(hex_word(AuraEne::kDirectModeRegister)) << ","
+        << "\"apply_register\":" << json_string(hex_word(AuraEne::kApplyRegister)) << ","
+        << "\"bus_status_before\":\"0x" << hex_byte(bus_status_before) << "\","
+        << "\"bus_status_after\":\"0x" << hex_byte(bus_status_after) << "\","
+        << "\"write_steps\":" << json_array(write_steps) << ","
+        << "\"duration_ms\":" << duration_ms << ","
+        << "\"bus_write_ok\":true,"
+        << "\"visual_verified\":false,"
+        << "\"visual_state\":\"unknown\","
+        << "\"applied\":false,"
+        << "\"re_prime\":" << (re_prime ? "true" : "false")
+        << "}";
+    return out.str();
 }
 
 void HardwareController::off() {
     const RgbColor black = {0x00, 0x00, 0x00};
     set_rgb(black);
+}
+
+std::string HardwareController::off_json(const std::string& function_used) {
+    const RgbColor black = {0x00, 0x00, 0x00};
+    return set_rgb_json(black, function_used);
 }
 
 void HardwareController::recover() {
@@ -919,6 +993,15 @@ void HardwareController::scene(const std::string& name, RgbColor& applied_color)
     }
     applied_color = definition->color;
     set_rgb(applied_color);
+}
+
+std::string HardwareController::scene_json(const std::string& name, RgbColor& applied_color) {
+    const SceneDefinition* definition = find_scene(name);
+    if (definition == nullptr) {
+        throw std::runtime_error("unknown scene: " + name);
+    }
+    applied_color = definition->color;
+    return set_rgb_json(applied_color, "agent.scene:" + name);
 }
 
 std::vector<std::string> HardwareController::current_blocking_conflicts() const {

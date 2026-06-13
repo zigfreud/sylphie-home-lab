@@ -20,10 +20,14 @@ public:
     void refresh_ownership();
 
     void set_rgb(const RgbColor& color);
+    std::string set_rgb_json(const RgbColor& color, const std::string& function_used);
+    std::string direct_v2_set_json(const RgbColor& color, bool re_prime, const std::string& function_used);
     void off();
+    std::string off_json(const std::string& function_used);
     void recover();
     void recover_set(const RgbColor& color);
     void scene(const std::string& name, RgbColor& applied_color);
+    std::string scene_json(const std::string& name, RgbColor& applied_color);
 
     std::vector<std::string> current_blocking_conflicts() const;
     std::vector<std::string> current_warnings() const;
