@@ -37,6 +37,8 @@ KNOWN_SERVICES = [
     "asComSvc",
     "ASUS Com Service",
     "AsusCertService",
+    "GameSDK Service",
+    "ROG Live Service",
     "asus",
     "asusm",
     "AsusROGLSLService",
@@ -52,6 +54,13 @@ KNOWN_PROCESSES = [
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
+    "Aac3572MbHal_x86",
+    "Aac3572DramHal_x86",
+    "AacKingstonDramHal_x64",
+    "AacKingstonDramHal_x86",
+    "extensionCardHal_x86",
+    "AcPowerNotification",
+    "ArmouryCrateControlInterface",
     "AuraWallpaperService",
     "Aura Wallpaper Service",
     "LightingService",
@@ -88,6 +97,21 @@ TIER2_PROCESS_NAMES = {
     "armourycrate.service",
     "armourycrate.usersessionhelper",
     "asus_framework",
+}
+
+ASUS_AURA_HAL_CORE_PROCESS_NAMES = {
+    "aac3572mbhal_x86",
+    "aac3572dramhal_x86",
+    "aackingstondramhal_x64",
+    "aackingstondramhal_x86",
+    "extensioncardhal_x86",
+    "acpowernotification",
+    "armourycratecontrolinterface",
+}
+
+ASUS_AURA_HAL_CORE_SERVICE_NAMES = {
+    "gamesdk service",
+    "rog live service",
 }
 
 NEVER_STOP_SERVICE_NAMES = {
@@ -128,6 +152,8 @@ ARMOURY_HEALTH_SERVICES = [
     "asComSvc",
     "ASUS Com Service",
     "AsusCertService",
+    "GameSDK Service",
+    "ROG Live Service",
     "asus",
     "asusm",
     "AsusROGLSLService",
@@ -143,6 +169,13 @@ ARMOURY_HEALTH_PROCESS_PATTERNS = [
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
+    "Aac3572MbHal_x86",
+    "Aac3572DramHal_x86",
+    "AacKingstonDramHal_x64",
+    "AacKingstonDramHal_x86",
+    "extensionCardHal_x86",
+    "AcPowerNotification",
+    "ArmouryCrateControlInterface",
     "AuraWallpaperService",
     "Aura Wallpaper Service",
     "logi_download_assistant*",
@@ -156,6 +189,13 @@ OWNERSHIP_PROCESS_NAMES = [
     "ArmourySwAgent",
     "ArmouryHtmlDebugServer",
     "asus_framework",
+    "Aac3572MbHal_x86",
+    "Aac3572DramHal_x86",
+    "AacKingstonDramHal_x64",
+    "AacKingstonDramHal_x86",
+    "extensionCardHal_x86",
+    "AcPowerNotification",
+    "ArmouryCrateControlInterface",
     "LightingService",
     "AuraWallpaperService",
     "OpenRGB",
@@ -453,7 +493,7 @@ class SylphieServer:
 
     def run_direct_v2_command(self, rgb, re_prime=False):
         agent_cmd = "direct_v2_reprime_set" if re_prime else "direct_v2_set"
-        command = ["agent", agent_cmd, rgb]
+        command = ["agent", "direct-v2-reprime-set" if re_prime else "direct-v2-set", rgb]
         acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
         if not acquired:
             return (
@@ -523,6 +563,103 @@ class SylphieServer:
             if result["ok"] and not trace:
                 result["ok"] = False
                 result["error"] = "agent direct_v2 command did not return required trace"
+
+            with self.state_lock:
+                self.current_command = None
+                self.last_command = command
+                self.last_result = result
+                if result["bus_write_ok"]:
+                    self.last_rgb = rgb
+                    self.last_scene = None
+
+            return (200 if result["ok"] else 500, result)
+        finally:
+            with self.state_lock:
+                if self.current_command == command:
+                    self.current_command = None
+            self.hardware_lock.release()
+
+    def run_static_prime_v3_command(self, rgb, variant):
+        variant = str(variant or "").lower()
+        if variant not in ("a", "b", "c"):
+            return 400, {
+                "ok": False,
+                "error": "static-prime-v3 variant must be a, b, or c",
+                "applied": False,
+                "bus_write_ok": False,
+                "visual_verified": False,
+                "visual_state": "unknown",
+            }
+        command = ["agent", "static-prime-v3-set", rgb, "--variant", variant]
+        acquired = self.hardware_lock.acquire(timeout=LOCK_WAIT_SECONDS)
+        if not acquired:
+            return (
+                409,
+                {
+                    "ok": False,
+                    "error": "hardware busy",
+                    "command": command,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 0,
+                    "applied": False,
+                    "bus_write_ok": False,
+                    "visual_verified": False,
+                    "visual_state": "unknown",
+                },
+            )
+
+        try:
+            with self.state_lock:
+                self.current_command = command
+
+            ownership = self.ownership_status()
+            if not ownership.get("write_allowed") and not ownership.get("sanity_write_allowed"):
+                result = {
+                    "ok": False,
+                    "error": "Effect/static prime writes are blocked until clean ownership is claimed or Sylphie is verified",
+                    "ownership": ownership,
+                    "command": command,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 0,
+                    "applied": False,
+                    "bus_write_ok": False,
+                    "visual_verified": False,
+                    "visual_state": "unknown",
+                }
+                with self.state_lock:
+                    self.current_command = None
+                    self.last_command = command
+                    self.last_result = result
+                return 409, result
+
+            takeover = self.takeover_check()
+            conflict = self.controller_conflict_response(takeover)
+            if conflict is not None:
+                with self.state_lock:
+                    self.current_command = None
+                    self.last_command = command
+                    self.last_result = conflict[1]
+                return conflict
+
+            payload = {"id": str(uuid.uuid4()), "cmd": "static_prime_v3_set", "rgb": rgb, "variant": variant}
+            result = self.run_agent_payload(payload, timeout_seconds=WRITE_TIMEOUT_SECONDS, command=command)
+            trace = agent_trace_from_backend_result(result)
+            if trace:
+                result["trace"] = trace
+                copy_trace_fields(result, trace)
+            result["bus_write_ok"] = bool(trace.get("bus_write_ok")) if trace else False
+            result["visual_state"] = "unknown"
+            result["visual_verified"] = False
+            result["applied"] = False
+            if not result["ok"] and "error" not in result:
+                result["error"] = result["stderr"] or result["stdout"] or "agent static-prime-v3 command failed"
+            if result["ok"] and not trace:
+                result["ok"] = False
+                result["error"] = "agent static-prime-v3 command did not return required trace"
 
             with self.state_lock:
                 self.current_command = None
@@ -624,7 +761,7 @@ class SylphieServer:
         derived.setdefault("sanity_write_allowed", False)
         derived.setdefault("claim_available", False)
         if derived.get("claim_available"):
-            claim_bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus_status"])
+            claim_bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus-status"])
             derived["claim_bus_status"] = claim_bus_status
             if not claim_bus_status.get("ok"):
                 derived["claim_available"] = False
@@ -674,7 +811,7 @@ class SylphieServer:
                 "ownership_clean": details,
                 "message": "Claim clean ownership requires no tier1 blockers and no Armoury core running.",
             }
-        bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus_status"])
+        bus_status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus-status"])
         if not bus_status.get("ok"):
             return 409, {
                 "ok": False,
@@ -1141,6 +1278,17 @@ RGB_TRACE_FIELDS = (
     "visual_verified",
     "visual_state",
     "re_prime",
+    "label",
+    "experimental",
+    "variant",
+    "intended_registers",
+    "byte_values",
+    "prime_steps",
+    "bus_status_after_prime",
+    "wait_ms",
+    "bus_status_after_wait",
+    "final_bus_status",
+    "direct_v2_trace",
 )
 
 
@@ -1194,6 +1342,11 @@ def cli_args_to_agent_payload(args):
     if command == "direct-v2-reprime-set" and len(args) == 2:
         payload["cmd"] = "direct_v2_reprime_set"
         payload["rgb"] = args[1]
+        return payload
+    if command == "static-prime-v3-set" and len(args) == 4 and args[2] == "--variant":
+        payload["cmd"] = "static_prime_v3_set"
+        payload["rgb"] = args[1]
+        payload["variant"] = args[3]
         return payload
     if command == "scene" and len(args) == 2:
         payload["cmd"] = "scene"
@@ -1610,6 +1763,11 @@ def warning_only_armoury_processes(probe):
     return [name for name in names if name in TIER2_PROCESS_NAMES]
 
 
+def asus_aura_hal_core_processes(probe):
+    names = process_base_names(probe)
+    return [name for name in names if name in ASUS_AURA_HAL_CORE_PROCESS_NAMES]
+
+
 def blocking_owner_processes_when_agent_offline(probe):
     names = process_base_names(probe)
     return [name for name in names if name in TIER1_PROCESS_NAMES]
@@ -1646,9 +1804,11 @@ def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
     running_services = running_service_names(probe)
     tier1_services = running_service_labels(probe, TIER1_SERVICE_NAMES)
     tier2_services = running_service_labels(probe, TIER2_SERVICE_NAMES)
+    hal_core_services = running_service_labels(probe, ASUS_AURA_HAL_CORE_SERVICE_NAMES)
     ignored_services = running_service_labels(probe, IGNORED_SERVICE_NAMES)
     offline_blocking_processes = blocking_owner_processes_when_agent_offline(probe)
     warning_processes = warning_only_armoury_processes(probe)
+    hal_core_processes = asus_aura_hal_core_processes(probe)
     informational_processes = []
 
     if capture_running:
@@ -1711,9 +1871,14 @@ def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
             reasons.append("Warning-only Armoury processes detected: " + "; ".join(agent_warnings))
         if tier2_services:
             reasons.append("Armoury core services still running: " + ", ".join(tier2_services))
+        if hal_core_services:
+            reasons.append("ASUS/Aura HAL/Core services still running: " + ", ".join(hal_core_services))
         if warning_processes:
             reasons.append("Warning-only Armoury processes detected: " + ", ".join(warning_processes))
             informational_processes = warning_processes
+        if hal_core_processes:
+            reasons.append("ASUS/Aura HAL/Core still running: " + ", ".join(hal_core_processes))
+            informational_processes = sorted(set(informational_processes + hal_core_processes))
         if ignored_services:
             informational_processes = sorted(set(informational_processes + ignored_services))
         if any("ArmouryCrate.exe" in item or "ArmouryCrate " in item for item in agent_warnings):
@@ -1764,26 +1929,30 @@ def derive_ownership_mode(capture_running, agent_status, probe, marker_mode):
             "sanity_write_allowed": sanity_write_allowed,
             "claim_available": claim_available,
             "blocking_conflicts": [],
-            "warnings": sorted(set(agent_warnings + tier2_services + warning_processes)),
+            "warnings": sorted(set(agent_warnings + tier2_services + warning_processes + hal_core_services + hal_core_processes)),
             "informational_processes": informational_processes,
         }
 
-    if lighting_running or tier1_services or offline_blocking_processes or warning_processes or tier2_services:
+    if lighting_running or tier1_services or offline_blocking_processes or warning_processes or tier2_services or hal_core_services or hal_core_processes:
         if lighting_running or tier1_services:
             reasons.append("Tier1 lighting services running: " + ", ".join(tier1_services or ["LightingService"]))
         if offline_blocking_processes:
             reasons.append("Armoury owner processes detected: " + ", ".join(offline_blocking_processes))
         if tier2_services:
             reasons.append("Armoury core services running: " + ", ".join(tier2_services))
+        if hal_core_services:
+            reasons.append("ASUS/Aura HAL/Core services still running: " + ", ".join(hal_core_services))
         if warning_processes:
             reasons.append("Warning-only Armoury processes detected: " + ", ".join(warning_processes))
+        if hal_core_processes:
+            reasons.append("ASUS/Aura HAL/Core still running: " + ", ".join(hal_core_processes))
         return {
             "mode": "armoury",
             "reasons": reasons,
             "write_allowed": False,
             "blocking_conflicts": [],
-            "warnings": sorted(set(tier2_services + warning_processes)),
-            "informational_processes": ignored_services,
+            "warnings": sorted(set(tier2_services + warning_processes + hal_core_services + hal_core_processes)),
+            "informational_processes": sorted(set(ignored_services + hal_core_processes)),
         }
 
     reasons.append("no clear Armoury or Sylphie owner detected")
@@ -2130,7 +2299,7 @@ def make_handler(server_state):
             if path == "/api/health":
                 doctor = server_state.run_backend(["doctor"])
                 agent_status = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
-                takeover = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "takeover_check"}, timeout_seconds=3, command=["agent", "takeover_check"])
+                takeover = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "takeover_check"}, timeout_seconds=3, command=["agent", "takeover-check"])
                 bus_status = server_state.run_backend(["bus-status"])
                 self.send_json(
                     200,
@@ -2184,7 +2353,7 @@ def make_handler(server_state):
                 return
 
             if path == "/api/services/status":
-                result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "service_status"}, timeout_seconds=5, command=["agent", "service_status"])
+                result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "service_status"}, timeout_seconds=5, command=["agent", "service-status"])
                 self.send_json(200 if result["ok"] else 503, result)
                 return
 
@@ -2256,6 +2425,9 @@ def make_handler(server_state):
                 elif path == "/api/lights/direct-v2-reprime":
                     rgb = normalize_rgb(body.get("rgb"))
                     status, result = server_state.run_direct_v2_command(rgb, re_prime=True)
+                elif path == "/api/research/static-prime-v3":
+                    rgb = normalize_rgb(body.get("rgb"))
+                    status, result = server_state.run_static_prime_v3_command(rgb, body.get("variant"))
                 elif path == "/api/sanity/set":
                     rgb = normalize_rgb(body.get("rgb"))
                     status, result = server_state.run_direct_v2_command(rgb, re_prime=False)
@@ -2283,14 +2455,14 @@ def make_handler(server_state):
                 elif path == "/api/agent/off":
                     status, result = server_state.run_hardware_command(["off"], rgb="000000", scene="off")
                 elif path == "/api/agent/bus-status":
-                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus_status"])
+                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "bus_status"}, timeout_seconds=5, command=["agent", "bus-status"])
                     status = 200 if result["ok"] else 503
                 elif path == "/api/agent/takeover-check" or path == "/api/takeover-check":
-                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "takeover_check"}, timeout_seconds=5, command=["agent", "takeover_check"])
+                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "takeover_check"}, timeout_seconds=5, command=["agent", "takeover-check"])
                     status = 200 if result["ok"] else 409
                 elif path == "/api/agent/takeover-dry-run" or path == "/api/services/takeover/dry-run":
                     payload = {"id": str(uuid.uuid4()), "cmd": "takeover_dry_run", "include_armoury_core": bool(body.get("include_armoury_core", False))}
-                    result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])
+                    result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover-dry-run"])
                     status = 200 if result["ok"] else 503
                 elif path == "/api/agent/takeover-execute" or path == "/api/services/takeover/execute":
                     include_armoury_core = bool(body.get("include_armoury_core", False))
@@ -2300,13 +2472,13 @@ def make_handler(server_state):
                         "i_accept_stopping_lighting_services": bool(body.get("i_accept_stopping_lighting_services", False)),
                         "include_armoury_core": include_armoury_core,
                     }
-                    result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
+                    result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover-execute"])
                     post_status = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
                     post_probe = ownership_probe_snapshot()
                     result = mark_takeover_result(server_state.project_root, result, include_armoury_core, post_status, post_probe)
                     status = 200 if result["ok"] else 500
                 elif path == "/api/agent/restore-services" or path == "/api/services/restore" or path == "/api/restore-services":
-                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "restore_services"}, timeout_seconds=10, command=["agent", "restore_services"])
+                    result = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "restore_services"}, timeout_seconds=10, command=["agent", "restore-services"])
                     status = 200 if result["ok"] else 503
                 elif path == "/api/agent/task/install":
                     result = server_state.run_agent_task_action("install", enable_autostart=bool(body.get("enable_autostart", False)))
@@ -2374,13 +2546,13 @@ def make_handler(server_state):
                             "i_accept_stopping_lighting_services": bool(body.get("accept", False)),
                             "include_armoury_core": include_armoury_core,
                         }
-                        result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover_execute"])
+                        result = server_state.run_agent_payload(payload, timeout_seconds=20, command=["agent", "takeover-execute"])
                         post_status = server_state.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
                         post_probe = ownership_probe_snapshot()
                         result = mark_takeover_result(server_state.project_root, result, include_armoury_core, post_status, post_probe)
                     else:
                         payload = {"id": str(uuid.uuid4()), "cmd": "takeover_dry_run", "include_armoury_core": bool(body.get("include_armoury_core", False))}
-                        result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover_dry_run"])
+                        result = server_state.run_agent_payload(payload, timeout_seconds=5, command=["agent", "takeover-dry-run"])
                     status = 200 if result["ok"] else 500
                 elif path == "/api/lifecycle/start-agent":
                     result = server_state.run_lifecycle_script("start-agent", timeout_seconds=15)

@@ -153,7 +153,7 @@ The Control Center has these tabs:
 - `Agent`: ping/status plus Scheduled Task status, install, enable/disable autostart, uninstall, start-now, and stop actions.
 - `Armoury Takeover`: service/process status, takeover dry-run, explicit takeover execute, and restore services.
 - `Diagnostics`: Armoury Health and Audio/Reactive Health for LightingService, Armoury addons/processes, Windows Audio, Logitech LampArray, and related process storms.
-- `Recovery`: bus-status, recover, recover-set white/red/last color, and placeholders for experimental recovery flows.
+- `Recovery`: bus-status, recover, recover-set white/red/last color, and experimental Effect/static prime research buttons.
 - `Capture Lab`: start broad capture, start Armoury UI capture, launch full Armoury cold-start capture, stop capture, sidecar markers, and capture log tail.
 - `Logs`: safe tail views for `logs/server.log`, `logs/agent.log`, `logs/commands.jsonl`, and the current capture log.
 

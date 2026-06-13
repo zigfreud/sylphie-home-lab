@@ -22,6 +22,7 @@ struct CommandRequest {
     std::string cmd;
     std::string rgb;
     std::string name;
+    std::string variant;
     bool i_accept_stopping_lighting_services = false;
     bool include_armoury_core = false;
 };

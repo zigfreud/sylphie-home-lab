@@ -9,11 +9,17 @@ import sys
 
 
 SELECT_RE = re.compile(r"AURA select_register (0x[0-9A-Fa-f]{4})")
-BLOCK_RE = re.compile(r"AURA block_write last_selected_register=(\S+) len=(\d+)(.*)")
+BLOCK_RE = re.compile(r"AURA block_write (?:last_selected_register|selected_register)=(\S+) len=(0x[0-9A-Fa-f]+|\d+)(.*)")
 PAYLOAD_RE = re.compile(r"payload_reads=([0-9A-Fa-f ]+)(?: \[extra=([0-9A-Fa-f]{2})\])?")
+CAPTURED_PAYLOAD_RE = re.compile(r"captured_payload=([0-9A-Fa-fx ]+)")
 BYTE_RE = re.compile(
     r"AURA byte_write value=(0x[0-9A-Fa-f]{2}) last_selected_register=(\S+)"
+    r"(?: possible_register=(0x[0-9A-Fa-f]{4}))?"
     r"(?: d1_hint_register=(0x[0-9A-Fa-f]{4}))?(?: confidence=(\S+))?"
+)
+BYTE_LEGACY_RE = re.compile(
+    r"AURA byte_write selected_register=(\S+) value=(0x[0-9A-Fa-f]{2})"
+    r"(?: confidence=(\S+))?"
 )
 READ_RE = re.compile(r"AURA read CMD=(0x[0-9A-Fa-f]{2})")
 TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)")
@@ -97,7 +103,15 @@ def nearby_marker_log(path):
 
 
 def register_matches_watch(item):
-    return {item.get("selected"), item.get("hint")}.intersection(WATCH_REGISTERS)
+    return {item.get("selected"), item.get("hint"), item.get("possible_register")}.intersection(WATCH_REGISTERS)
+
+
+def parse_len(value):
+    return int(value, 16) if str(value).lower().startswith("0x") else int(value, 10)
+
+
+def ambiguous_80a0_hint(selected, possible_register):
+    return selected == "0X80A0" and possible_register in {"0X8020", "0X8022", "0X8023", "0X8027"}
 
 
 def in_window(item, start, end):
@@ -115,8 +129,9 @@ def format_block(item):
 
 def format_byte(item):
     hint = f" hint={item['hint']}" if item.get("hint") else ""
+    possible = f" possible={item['possible_register']}" if item.get("possible_register") else ""
     confidence = f" confidence={item['confidence']}" if item.get("confidence") else ""
-    return f"{timestamp_text(item.get('timestamp'))} value={item['value']} selected={item['selected']}{hint}{confidence}"
+    return f"{timestamp_text(item.get('timestamp'))} value={item['value']} selected={item['selected']}{possible}{hint}{confidence}"
 
 
 def format_read(item):
@@ -192,12 +207,15 @@ def analyze(master_paths, marker_paths=None):
         block_match = BLOCK_RE.search(line)
         if block_match:
             reg = block_match.group(1).upper()
-            length = int(block_match.group(2), 10)
+            length = parse_len(block_match.group(2))
             tail = block_match.group(3)
             payload_match = PAYLOAD_RE.search(tail)
+            captured_payload_match = CAPTURED_PAYLOAD_RE.search(tail)
             recent_match = RECENT_SELECTS_RE.search(tail)
             confidence_match = CONFIDENCE_RE.search(tail)
             payload = payload_match.group(1).strip().upper() if payload_match else None
+            if payload is None and captured_payload_match:
+                payload = captured_payload_match.group(1).replace("0x", "").replace("0X", "").strip().upper()
             extra = payload_match.group(2).upper() if payload_match and payload_match.group(2) else None
             item = {
                 "timestamp": current_ts,
@@ -206,7 +224,7 @@ def analyze(master_paths, marker_paths=None):
                 "payload": payload,
                 "extra": extra,
                 "recent_selects": recent_match.group(1) if recent_match else None,
-                "confidence": confidence_match.group(1) if confidence_match else ("selected" if reg != "UNKNOWN" else "unknown"),
+                "confidence": confidence_match.group(1) if confidence_match else ("best_effort" if reg != "UNKNOWN" else "unknown"),
                 "line": line,
             }
             block_writes.append(item)
@@ -217,16 +235,38 @@ def analyze(master_paths, marker_paths=None):
         if byte_match:
             value = byte_match.group(1).upper()
             selected = byte_match.group(2).upper()
-            hint = (byte_match.group(3) or "").upper()
-            confidence = byte_match.group(4)
+            possible_register = (byte_match.group(3) or "").upper()
+            hint = (byte_match.group(4) or "").upper()
+            confidence = byte_match.group(5)
+            if not possible_register:
+                possible_register = hint
             if not confidence:
-                confidence = "ambiguous" if hint and hint != selected else "selected"
+                confidence = "ambiguous" if (hint and hint != selected) or ambiguous_80a0_hint(selected, possible_register) else "best_effort"
             byte_writes.append(
                 {
                     "timestamp": current_ts,
                     "value": value,
                     "selected": selected,
+                    "possible_register": possible_register,
                     "hint": hint,
+                    "confidence": confidence,
+                    "line": line,
+                }
+            )
+            continue
+
+        legacy_byte_match = BYTE_LEGACY_RE.search(line)
+        if legacy_byte_match:
+            selected = legacy_byte_match.group(1).upper()
+            value = legacy_byte_match.group(2).upper()
+            confidence = legacy_byte_match.group(3) or "best_effort"
+            byte_writes.append(
+                {
+                    "timestamp": current_ts,
+                    "value": value,
+                    "selected": selected,
+                    "possible_register": "",
+                    "hint": "",
                     "confidence": confidence,
                     "line": line,
                 }
@@ -408,6 +448,8 @@ def write_red_stuck_summary(result, summary_dir):
         "",
         "## Selected Register History",
         "",
+        "`selected_register` is best-effort. If byte-write `D1` hints point at `0x8020`, `0x8022`, `0x8023`, or `0x8027` while the last selected register is `0x80A0`, treat the event as ambiguous and inspect `possible_register`.",
+        "",
     ]
     if not result["selected_registers"]:
         lines.append("- none")
@@ -480,6 +522,7 @@ def print_report(result, summary_path=None):
         print(f"- {key}: {', '.join(values) if values else 'not observed'}")
     print("")
     print("## Selected Registers")
+    print("selected_register is best-effort; byte writes with possible_register hints may override stale 0x80A0 context.")
     for reg, count in sorted(result["selected_registers"].items()):
         print(f"- {reg}: {count}")
     print("")

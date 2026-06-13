@@ -573,6 +573,38 @@ async function directV2RawTest(label, rgb, rePrime = false) {
   return payload;
 }
 
+async function staticPrimeV3Test(variant, rgb, label) {
+  lastRequestedRgb = rgb;
+  lastRgb.textContent = `Last RGB: ${lastRequestedRgb}`;
+  const payload = await post("/api/research/static-prime-v3", {variant, rgb});
+  show("recovery", payload);
+  if (!payload.ok || !payload.bus_write_ok) return payload;
+
+  const fadeStopped = window.confirm("Effect/static prime: did fade stop?");
+  const colorFixed = window.confirm(`Effect/static prime: did the color become fixed ${label}?`);
+  const flashedThenReturned = window.confirm("Effect/static prime: did it flash then return to fade?");
+  payload.visual_feedback = {
+    fade_stopped: fadeStopped,
+    color_fixed: colorFixed,
+    flashed_then_returned_to_fade: flashedThenReturned,
+  };
+  payload.visual_verified = fadeStopped && colorFixed && !flashedThenReturned;
+  payload.visual_state = payload.visual_verified ? "static_visual_control_confirmed" : "not_verified";
+  payload.applied = false;
+  payload.message = payload.visual_verified
+    ? "Static visual control confirmed by user."
+    : "Static visual control was not confirmed; normal RGB writes remain blocked.";
+  show("recovery", payload);
+
+  if (payload.visual_verified && window.confirm("Static visual control confirmed. Mark Sylphie Verified and enable normal RGB writes?")) {
+    const verified = await post("/api/ownership/mark-verified", {});
+    payload.mark_verified_result = verified;
+    show("recovery", payload);
+    await refreshOwnership();
+  }
+  return payload;
+}
+
 const actions = {
   health: () => run(activePanelName(), "Checking...", () => request("/api/health")),
   ownershipStatus: () => run(activePanelName(), "Checking owner...", () => request("/api/ownership/status")),
@@ -618,6 +650,12 @@ const actions = {
   directV2Red: () => run("lights", "Direct V2 red...", () => directV2RawTest("red", "FF0000")),
   directV2White: () => run("lights", "Direct V2 white...", () => directV2RawTest("white", "FFFFFF")),
   reprimeDirectMode: () => run("lights", "Re-priming direct mode...", () => directV2RawTest("re-prime", lastRequestedRgb || "FF0000", true)),
+  staticPrimeARed: () => run("recovery", "Effect/static prime A red...", () => staticPrimeV3Test("a", "FF0000", "red")),
+  staticPrimeBRed: () => run("recovery", "Effect/static prime B red...", () => staticPrimeV3Test("b", "FF0000", "red")),
+  staticPrimeCRed: () => run("recovery", "Effect/static prime C red...", () => staticPrimeV3Test("c", "FF0000", "red")),
+  staticPrimeAWhite: () => run("recovery", "Effect/static prime A white...", () => staticPrimeV3Test("a", "FFFFFF", "white")),
+  staticPrimeBWhite: () => run("recovery", "Effect/static prime B white...", () => staticPrimeV3Test("b", "FFFFFF", "white")),
+  staticPrimeCWhite: () => run("recovery", "Effect/static prime C white...", () => staticPrimeV3Test("c", "FFFFFF", "white")),
   agentPing: () => run("agent", "Pinging agent...", () => post("/api/agent/ping")),
   agentStatus: () => run("agent", "Loading agent status...", () => request("/api/agent/status")),
   agentTaskStatus: () => run("agent", "Loading task status...", () => request("/api/agent/task/status")),

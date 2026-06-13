@@ -355,6 +355,7 @@ bool parse_command_request(const std::string& line, CommandRequest& request, std
     extract_json_string(line, "id", request.id);
     extract_json_string(line, "rgb", request.rgb);
     extract_json_string(line, "name", request.name);
+    extract_json_string(line, "variant", request.variant);
     extract_json_bool(line, "i_accept_stopping_lighting_services", request.i_accept_stopping_lighting_services);
     extract_json_bool(line, "include_armoury_core", request.include_armoury_core);
     return true;

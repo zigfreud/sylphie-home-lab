@@ -328,6 +328,17 @@ std::string payload_text(const std::vector<uint8_t>& payload) {
     return out.str();
 }
 
+bool is_register_hint_d1(uint8_t value) {
+    return value == 0x20 || value == 0x22 || value == 0x23 || value == 0x27;
+}
+
+std::string possible_register_from_d1(uint8_t value) {
+    if (!is_register_hint_d1(value)) {
+        return "";
+    }
+    return hex4(static_cast<uint16_t>(0x8000 | value));
+}
+
 void decode_aura(
     std::ofstream& log,
     const Snapshot& s,
@@ -346,19 +357,27 @@ void decode_aura(
     }
 
     if (s.cmd == 0x01) {
+        const std::string selected = selected_register_valid ? hex4(selected_register) : std::string("unknown");
+        const std::string possible_register = possible_register_from_d1(s.d1);
+        const bool ambiguous = selected_register_valid && selected_register == 0x80A0 && !possible_register.empty();
         std::ostringstream line;
-        line << "  AURA byte_write selected_register="
-             << (selected_register_valid ? hex4(selected_register) : std::string("unknown"))
-             << " value=" << hex2(s.d0);
+        line << "  AURA byte_write value=" << hex2(s.d0)
+             << " last_selected_register=" << selected;
+        if (!possible_register.empty()) {
+            line << " possible_register=" << possible_register
+                 << " d1_hint_register=" << possible_register;
+        }
+        line << " confidence=" << (ambiguous ? "ambiguous" : "best_effort");
         write_line(log, line.str());
         return;
     }
 
     if (s.cmd == 0x03) {
         std::ostringstream line;
-        line << "  AURA block_write selected_register="
+        line << "  AURA block_write last_selected_register="
              << (selected_register_valid ? hex4(selected_register) : std::string("unknown"))
-             << " len=" << hex2(s.d0);
+             << " len=" << hex2(s.d0)
+             << " confidence=best_effort";
         if (!captured_payload.empty()) {
             line << " captured_payload=" << payload_text(captured_payload);
         }

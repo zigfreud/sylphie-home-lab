@@ -22,6 +22,7 @@ public:
     void set_rgb(const RgbColor& color);
     std::string set_rgb_json(const RgbColor& color, const std::string& function_used);
     std::string direct_v2_set_json(const RgbColor& color, bool re_prime, const std::string& function_used);
+    std::string static_prime_v3_set_json(const RgbColor& color, char variant);
     void off();
     std::string off_json(const std::string& function_used);
     void recover();

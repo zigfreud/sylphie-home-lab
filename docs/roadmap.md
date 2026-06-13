@@ -11,6 +11,7 @@ Local API/dashboard stability:
 - Controller ownership checks run before API writes.
 - Armoury/Sylphie coexistence distinguishes soft takeover, Sylphie Candidate, and Sylphie Verified via direct visual sanity test.
 - Direct V2 sanity emits mandatory technical trace and does not unlock normal writes without visual confirmation.
+- Experimental Effect/static prime v3 microtests exist for fade/effect engine handoff research without changing Direct V2.
 - Already-clean ownership is claimable without stop actions; Logitech process storms are grouped as external diagnostics noise.
 - Conservative software recovery is available through the CLI and dashboard.
 

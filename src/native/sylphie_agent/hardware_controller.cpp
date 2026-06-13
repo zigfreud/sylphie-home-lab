@@ -14,6 +14,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -49,6 +50,12 @@ struct TakeoverTarget {
     std::string display_name;
     std::string binary_path;
     unsigned long service_pid = 0;
+};
+
+struct RegisterByteStep {
+    uint16_t reg = 0;
+    uint8_t value = 0;
+    uint8_t status_after = 0;
 };
 
 const TakeoverRule kTakeoverRules[] = {
@@ -92,6 +99,99 @@ std::string hex_word(uint16_t value) {
 
 std::string rgb_payload_hex(const RgbColor& color) {
     return hex_byte(color.r) + hex_byte(color.g) + hex_byte(color.b);
+}
+
+std::string json_register_byte_steps(const std::vector<RegisterByteStep>& steps) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < steps.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << "{"
+            << "\"operation\":\"byte_write\","
+            << "\"register\":" << json_string(hex_word(steps[i].reg)) << ","
+            << "\"value\":\"0x" << hex_byte(steps[i].value) << "\","
+            << "\"bus_status_after\":\"0x" << hex_byte(steps[i].status_after) << "\","
+            << "\"steps\":[" << json_string("select " + hex_word(steps[i].reg)) << ","
+            << json_string("byte write 0x" + hex_byte(steps[i].value)) << "]"
+            << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
+std::vector<std::string> register_list_from_steps(const std::vector<RegisterByteStep>& steps) {
+    std::vector<std::string> values;
+    for (const RegisterByteStep& step : steps) {
+        values.push_back(hex_word(step.reg));
+    }
+    return values;
+}
+
+std::vector<std::string> byte_value_list_from_steps(const std::vector<RegisterByteStep>& steps) {
+    std::vector<std::string> values;
+    for (const RegisterByteStep& step : steps) {
+        values.push_back("0x" + hex_byte(step.value));
+    }
+    return values;
+}
+
+std::string execute_direct_v2_set_trace(
+    Piix4Smbus& smbus,
+    AuraEne& aura,
+    const RgbColor& color,
+    bool re_prime,
+    const std::string& function_used) {
+    const ULONGLONG start_ms = GetTickCount64();
+    const uint8_t bus_status_before = smbus.host_status();
+    std::vector<std::string> write_steps;
+
+    if (re_prime) {
+        aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
+        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kDirectModeRegister));
+        write_steps.push_back("re-prime: byte write 0x01");
+        aura.apply();
+        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kApplyRegister));
+        write_steps.push_back("re-prime: byte write 0x01");
+    }
+
+    aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
+    write_steps.push_back("select " + hex_word(AuraEne::kDirectModeRegister));
+    write_steps.push_back("byte write 0x01");
+    aura.apply();
+    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
+    write_steps.push_back("byte write 0x01");
+    aura.write_block3(AuraEne::kRgbDirectRegister, color.r, color.g, color.b);
+    write_steps.push_back("select " + hex_word(AuraEne::kRgbDirectRegister));
+    write_steps.push_back("block write len=3 payload RGB");
+    aura.apply();
+    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
+    write_steps.push_back("byte write 0x01");
+
+    const uint8_t bus_status_after = smbus.host_status();
+    const ULONGLONG duration_ms = GetTickCount64() - start_ms;
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":true,"
+        << "\"function_used\":" << json_string(function_used) << ","
+        << "\"path_used\":\"direct_v2_8101\","
+        << "\"register_rgb\":" << json_string(hex_word(AuraEne::kRgbDirectRegister)) << ","
+        << "\"payload_order\":\"R G B\","
+        << "\"payload_hex\":" << json_string(rgb_payload_hex(color)) << ","
+        << "\"direct_mode_register\":" << json_string(hex_word(AuraEne::kDirectModeRegister)) << ","
+        << "\"apply_register\":" << json_string(hex_word(AuraEne::kApplyRegister)) << ","
+        << "\"bus_status_before\":\"0x" << hex_byte(bus_status_before) << "\","
+        << "\"bus_status_after\":\"0x" << hex_byte(bus_status_after) << "\","
+        << "\"write_steps\":" << json_array(write_steps) << ","
+        << "\"duration_ms\":" << duration_ms << ","
+        << "\"bus_write_ok\":true,"
+        << "\"visual_verified\":false,"
+        << "\"visual_state\":\"unknown\","
+        << "\"applied\":false,"
+        << "\"re_prime\":" << (re_prime ? "true" : "false")
+        << "}";
+    return out.str();
 }
 
 OwnershipConflicts current_ownership_conflicts() {
@@ -908,55 +1008,78 @@ std::string HardwareController::set_rgb_json(const RgbColor& color, const std::s
 std::string HardwareController::direct_v2_set_json(const RgbColor& color, bool re_prime, const std::string& function_used) {
     std::lock_guard<std::mutex> lock(hardware_mutex_);
     refuse_if_conflicted();
-    const ULONGLONG start_ms = GetTickCount64();
     Piix4Smbus smbus;
-    const uint8_t bus_status_before = smbus.host_status();
     AuraEne aura(smbus);
-    std::vector<std::string> write_steps;
+    return execute_direct_v2_set_trace(smbus, aura, color, re_prime, function_used);
+}
 
-    if (re_prime) {
-        aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
-        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kDirectModeRegister));
-        write_steps.push_back("re-prime: byte write 0x01");
-        aura.apply();
-        write_steps.push_back("re-prime: select " + hex_word(AuraEne::kApplyRegister));
-        write_steps.push_back("re-prime: byte write 0x01");
+std::string HardwareController::static_prime_v3_set_json(const RgbColor& color, char variant) {
+    const char normalized_variant = static_cast<char>(std::tolower(static_cast<unsigned char>(variant)));
+    if (normalized_variant != 'a' && normalized_variant != 'b' && normalized_variant != 'c') {
+        throw std::runtime_error("static-prime-v3 variant must be a, b, or c");
     }
 
-    aura.write_byte(AuraEne::kDirectModeRegister, 0x01);
-    write_steps.push_back("select " + hex_word(AuraEne::kDirectModeRegister));
-    write_steps.push_back("byte write 0x01");
-    aura.apply();
-    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
-    write_steps.push_back("byte write 0x01");
-    aura.write_block3(AuraEne::kRgbDirectRegister, color.r, color.g, color.b);
-    write_steps.push_back("select " + hex_word(AuraEne::kRgbDirectRegister));
-    write_steps.push_back("block write len=3 payload RGB");
-    aura.apply();
-    write_steps.push_back("select " + hex_word(AuraEne::kApplyRegister));
-    write_steps.push_back("byte write 0x01");
+    std::lock_guard<std::mutex> lock(hardware_mutex_);
+    refuse_if_conflicted();
+    const ULONGLONG start_ms = GetTickCount64();
+    Piix4Smbus smbus;
+    AuraEne aura(smbus);
+    const uint8_t bus_status_before = smbus.host_status();
+    std::vector<RegisterByteStep> prime_steps;
 
-    const uint8_t bus_status_after = smbus.host_status();
+    if (normalized_variant == 'b' || normalized_variant == 'c') {
+        prime_steps.push_back({AuraEne::kDirectModeRegister, 0x00});
+    }
+    if (normalized_variant == 'c') {
+        prime_steps.push_back({AuraEne::kArmouryLiteRegister8027, 0x00});
+        prime_steps.push_back({0x8022, 0x00});
+    }
+    prime_steps.push_back({AuraEne::kArmouryLiteRegister8023, 0xAA});
+    prime_steps.push_back({AuraEne::kArmouryLiteRegister8023, 0x98});
+
+    for (RegisterByteStep& step : prime_steps) {
+        aura.write_byte(step.reg, step.value);
+        step.status_after = smbus.host_status();
+    }
+
+    const uint8_t bus_status_after_prime = smbus.host_status();
+    constexpr DWORD kPrimeWaitMs = 50;
+    Sleep(kPrimeWaitMs);
+    const uint8_t bus_status_after_wait = smbus.host_status();
+    const std::string direct_v2_trace = execute_direct_v2_set_trace(
+        smbus,
+        aura,
+        color,
+        false,
+        "agent.static_prime_v3_set:direct_v2");
+    const uint8_t final_bus_status = smbus.host_status();
     const ULONGLONG duration_ms = GetTickCount64() - start_ms;
+
     std::ostringstream out;
     out << "{"
         << "\"ok\":true,"
-        << "\"function_used\":" << json_string(function_used) << ","
-        << "\"path_used\":\"direct_v2_8101\","
-        << "\"register_rgb\":" << json_string(hex_word(AuraEne::kRgbDirectRegister)) << ","
-        << "\"payload_order\":\"R G B\","
+        << "\"function_used\":\"agent.static_prime_v3_set\","
+        << "\"path_used\":\"static_prime_v3\","
+        << "\"label\":\"Effect/static prime\","
+        << "\"experimental\":true,"
+        << "\"variant\":" << json_string(std::string(1, normalized_variant)) << ","
         << "\"payload_hex\":" << json_string(rgb_payload_hex(color)) << ","
-        << "\"direct_mode_register\":" << json_string(hex_word(AuraEne::kDirectModeRegister)) << ","
-        << "\"apply_register\":" << json_string(hex_word(AuraEne::kApplyRegister)) << ","
+        << "\"payload_order\":\"R G B\","
+        << "\"intended_registers\":" << json_array(register_list_from_steps(prime_steps)) << ","
+        << "\"byte_values\":" << json_array(byte_value_list_from_steps(prime_steps)) << ","
+        << "\"prime_steps\":" << json_register_byte_steps(prime_steps) << ","
         << "\"bus_status_before\":\"0x" << hex_byte(bus_status_before) << "\","
-        << "\"bus_status_after\":\"0x" << hex_byte(bus_status_after) << "\","
-        << "\"write_steps\":" << json_array(write_steps) << ","
+        << "\"bus_status_after_prime\":\"0x" << hex_byte(bus_status_after_prime) << "\","
+        << "\"wait_ms\":" << kPrimeWaitMs << ","
+        << "\"bus_status_after_wait\":\"0x" << hex_byte(bus_status_after_wait) << "\","
+        << "\"final_bus_status\":\"0x" << hex_byte(final_bus_status) << "\","
+        << "\"bus_status_after\":\"0x" << hex_byte(final_bus_status) << "\","
+        << "\"direct_v2_trace\":" << direct_v2_trace << ","
         << "\"duration_ms\":" << duration_ms << ","
         << "\"bus_write_ok\":true,"
         << "\"visual_verified\":false,"
         << "\"visual_state\":\"unknown\","
-        << "\"applied\":false,"
-        << "\"re_prime\":" << (re_prime ? "true" : "false")
+        << "\"applied\":false"
         << "}";
     return out.str();
 }

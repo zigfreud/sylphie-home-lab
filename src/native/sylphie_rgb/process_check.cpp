@@ -52,6 +52,13 @@ std::vector<ProcessMatch> find_asus_lighting_processes() {
         "ArmourySwAgent",
         "ArmouryHtmlDebugServer",
         "asus_framework",
+        "Aac3572MbHal_x86",
+        "Aac3572DramHal_x86",
+        "AacKingstonDramHal_x64",
+        "AacKingstonDramHal_x86",
+        "extensionCardHal_x86",
+        "AcPowerNotification",
+        "ArmouryCrateControlInterface",
         "AsusCertService",
         "AuraWallpaperService",
         "Aura Wallpaper Service",
@@ -113,6 +120,13 @@ bool process_match_is_warning(const ProcessMatch& process) {
         "ArmouryCrate.Service",
         "ArmouryCrate.UserSessionHelper",
         "asus_framework",
+        "Aac3572MbHal_x86",
+        "Aac3572DramHal_x86",
+        "AacKingstonDramHal_x64",
+        "AacKingstonDramHal_x86",
+        "extensionCardHal_x86",
+        "AcPowerNotification",
+        "ArmouryCrateControlInterface",
     };
     return is_name_in_list(process.matched_rule, warnings, sizeof(warnings) / sizeof(warnings[0]));
 }

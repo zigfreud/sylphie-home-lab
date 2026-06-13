@@ -82,6 +82,7 @@ void print_help() {
         << "  sylphie_agent.exe --client set FF0000\n"
         << "  sylphie_agent.exe --client direct-v2-set FF0000\n"
         << "  sylphie_agent.exe --client direct-v2-reprime-set FF0000\n"
+        << "  sylphie_agent.exe --client static-prime-v3-set FF0000 --variant a|b|c\n"
         << "  sylphie_agent.exe --client scene movie\n"
         << "  sylphie_agent.exe --client off\n"
         << "  sylphie_agent.exe --client recover\n"
@@ -161,6 +162,15 @@ std::string build_client_request(const std::vector<std::string>& args) {
     }
     if (command == "direct-v2-reprime-set" && args.size() == 2) {
         return make_request_json(id, "direct_v2_reprime_set", "rgb", args[1]);
+    }
+    if (command == "static-prime-v3-set" && args.size() == 4 && args[2] == "--variant") {
+        std::ostringstream out;
+        out << "{\"id\":" << json_string(id)
+            << ",\"cmd\":\"static_prime_v3_set\""
+            << ",\"rgb\":" << json_string(args[1])
+            << ",\"variant\":" << json_string(args[3])
+            << "}";
+        return out.str();
     }
     if (command == "scene" && args.size() == 2) {
         return make_request_json(id, "scene", "name", args[1]);
@@ -279,6 +289,18 @@ private:
                 color,
                 re_prime,
                 re_prime ? "agent.direct_v2_reprime_set" : "agent.direct_v2_set");
+            state_.set_rgb(rgb_to_hex(color));
+            return result;
+        }
+        if (request.cmd == "static_prime_v3_set") {
+            RgbColor color;
+            if (!parse_rgb_hex(request.rgb, color)) {
+                throw std::runtime_error("rgb must be exactly 6 hex characters");
+            }
+            if (request.variant.size() != 1) {
+                throw std::runtime_error("static-prime-v3 variant must be a, b, or c");
+            }
+            const std::string result = hardware_.static_prime_v3_set_json(color, request.variant[0]);
             state_.set_rgb(rgb_to_hex(color));
             return result;
         }

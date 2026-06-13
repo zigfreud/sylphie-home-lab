@@ -128,6 +128,16 @@ The sanity path must be `direct_v2_8101` only:
 
 Use the `Direct V2 raw test` buttons for off/blue/green/red/white and inspect `path_used`, `register_rgb`, `payload_hex`, `bus_status_before`, `bus_status_after`, `write_steps`, and `bus_write_ok`. If bus writes succeed but visual verification fails, keep normal RGB writes and scenes blocked. The experimental `Re-prime direct mode` button repeats only the same direct-on/apply/direct-v2/final-apply sequence; it does not introduce new registers.
 
+### Effect/static Prime Research
+
+If Direct V2 changes the strip only briefly and fade/effect mode resumes, use `Recovery / Research -> Effect/static prime`. Variants A/B/C are experimental microtests based on fade/effect-to-static capture hints and are not recover flows:
+
+- Variant A writes `0x8023=0xAA`, `0x8023=0x98`, then runs unchanged Direct V2.
+- Variant B writes `0x8020=0x00`, then Variant A, then unchanged Direct V2.
+- Variant C writes `0x8020=0x00`, `0x8027=0x00`, `0x8022=0x00`, then Variant A, then unchanged Direct V2.
+
+The UI records whether fade stopped, whether the color became fixed, and whether it flashed then returned to fade. Normal RGB writes must remain blocked unless the user explicitly confirms static visual control and explicitly marks Sylphie Verified.
+
 If takeover execute makes no changes while tier1 and tier2 owners are already stopped, treat the environment as already clean, not as a failed no-op. Use `Claim clean ownership`, then run the direct sanity test. Do not show `Armoury core still running` unless a tier2 service is actually `Running`/has a PID or a tier2 helper process exists.
 
 Logitech Download Assistant process storms are external diagnostic noise. They do not affect Armoury/Sylphie ownership. Use `Stop Logitech LampArray temporarily` to stop `logi_lamparray_service` and kill `logi_download_assistant*` without changing `StartupType`; use `Set Logitech LampArray to Manual` only as an explicit advanced action.
@@ -247,6 +257,8 @@ The Control Center `Capture Lab` can start broad or Armoury UI capture probes an
 If you start capture after manually stopping the Armoury/Aura stack, select `Stack already stopped, start capture now` before pressing start. This records `STACK_ALREADY_STOPPED_AT_CAPTURE_START` and a service/process snapshot at capture start. In that mode, missing `SERVICE_STOPPED` is expected and does not mean the capture was performed incorrectly.
 
 For fast Armoury rearm bursts, enable `High-rate ring buffer` in the panel. The probe minimizes sleeps, can raise priority, focuses on `ADDR=0x40` and registers `0x8000,0x8020,0x80A0,0x80F1,0x8022,0x8023`, and dumps recent snapshots around block writes. It still does not poll `SMBBLKDAT/+0x07`; payload reads remain limited to `CMD=0x03` block writes when payload capture is enabled.
+
+Treat `selected_register` from broad capture as best-effort. If byte-write `D1` hints point at `0x8020`, `0x8022`, `0x8023`, or `0x8027` while the last selected register is `0x80A0`, inspect `possible_register` and treat the event as ambiguous. Do not claim block writes are definitely to `0x80A0` from selected-register state alone.
 
 If a capture does not start from the panel, confirm the probe exists:
 
