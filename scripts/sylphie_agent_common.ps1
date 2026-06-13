@@ -1,5 +1,11 @@
 $SylphieAgentCommonLoaded = $true
 
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+} catch {
+}
+
 function Get-SylphieProjectRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }

@@ -128,6 +128,11 @@ function updateConflictAlert(payload) {
   const manual = lastResult?.manual_action_required || payload?.manual_action_required || [];
   const blockers = state?.blocking_conflicts || payload?.blocking_conflicts || payload?.response?.state?.last_result?.blocking_conflicts;
   const warnings = state?.warnings || payload?.warnings || payload?.response?.state?.last_result?.warnings;
+  if (payload?.output_encoding_warning || payload?.command_result?.output_encoding_warning) {
+    conflictAlert.hidden = false;
+    conflictAlert.textContent = payload.output_encoding_warning || payload.command_result.output_encoding_warning;
+    return;
+  }
   if (manual && manual.length) {
     conflictAlert.hidden = false;
     conflictAlert.textContent = `Takeover cannot complete automatically because some blocking conflicts require manual action: ${manual.join(", ")}`;
@@ -170,6 +175,7 @@ function updateAgentSummary(payload) {
 
 function updateAgentTaskSummary(payload) {
   if (!("task_exists" in (payload || {}))) return;
+  const state = payload.agent_state || payload.agent_status?.response?.state || {};
   const items = [
     ["Task exists", String(payload.task_exists)],
     ["Task enabled", String(payload.task_enabled)],
@@ -177,8 +183,12 @@ function updateAgentTaskSummary(payload) {
     ["Agent process running", String(payload.agent_process_running ?? payload.running)],
     ["Pipe responding", String(payload.pipe_responding ?? payload.agent_ping)],
     ["PID", (payload.pids || []).join(", ") || "none"],
-    ["Elevated", String(payload.elevated)],
-    ["Agent owner status", payload.agent_state?.current_owner_status || "unknown"],
+    ["Elevated", String(payload.elevated ?? state.is_elevated ?? "unknown")],
+    ["Agent owner status", payload.agent_owner_status || state.current_owner_status || "unknown"],
+    ["blocking_conflicts", (payload.blocking_conflicts || state.blocking_conflicts || []).join(", ") || "none"],
+    ["warnings", (payload.warnings || state.warnings || []).join(", ") || "none"],
+    ["command_count", String(payload.command_count ?? state.command_count ?? "unknown")],
+    ["failure_count", String(payload.failure_count ?? state.failure_count ?? "unknown")],
   ];
   agentSummary.innerHTML = items.map(([label, value]) => `<div><strong>${label}</strong><span>${escapeHtml(String(value))}</span></div>`).join("");
 }

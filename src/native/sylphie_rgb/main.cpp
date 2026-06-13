@@ -168,7 +168,12 @@ std::string json_escape(const std::string& value) {
             out << "\\t";
             break;
         default:
-            out << c;
+            const unsigned char ch = static_cast<unsigned char>(c);
+            if (ch < 0x20 || ch >= 0x80) {
+                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch) << std::dec;
+            } else {
+                out << c;
+            }
             break;
         }
     }

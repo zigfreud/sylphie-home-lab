@@ -1,6 +1,7 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import json
+import locale
 import os
 from pathlib import Path
 import re
@@ -230,50 +231,20 @@ class SylphieServer:
                 return agent_result
 
         command = self.command_base() + args
-        start = time.perf_counter()
-        result = {
-            "ok": False,
-            "command": command,
-            "stdout": "",
-            "stderr": "",
-            "exit_code": None,
-            "duration_ms": 0,
-        }
-
         if not self.exe_exists():
-            result["stderr"] = "sylphie_rgb.exe not found: " + str(self.exe_path)
+            result = {
+                "ok": False,
+                "command": command,
+                "stdout": "",
+                "stderr": "sylphie_rgb.exe not found: " + str(self.exe_path),
+                "exit_code": None,
+                "duration_ms": 0,
+            }
             result["error"] = result["stderr"]
-            return result
-
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                shell=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            result["stderr"] = "command timed out after %d seconds" % timeout_seconds
-            result["stdout"] = ensure_text(exc.stdout)
-            result["exit_code"] = None
-            result["error"] = result["stderr"]
-            result["duration_ms"] = elapsed_ms(start)
             self.log_command({"kind": "backend", "result": summarize_for_log(result)})
             return result
-        except OSError as exc:
-            result["stderr"] = str(exc)
-            result["error"] = result["stderr"]
-            result["duration_ms"] = elapsed_ms(start)
-            self.log_command({"kind": "backend", "result": summarize_for_log(result)})
-            return result
-
-        result["stdout"] = completed.stdout
-        result["stderr"] = completed.stderr
-        result["exit_code"] = completed.returncode
-        result["ok"] = completed.returncode == 0
-        result["duration_ms"] = elapsed_ms(start)
-        if not result["ok"]:
+        result = run_subprocess(command, timeout_seconds=timeout_seconds)
+        if not result["ok"] and result.get("error") == "command failed":
             result["error"] = result["stderr"] or result["stdout"] or "backend command failed"
         self.log_command({"kind": "backend", "result": summarize_for_log(result)})
         return result
@@ -314,10 +285,16 @@ class SylphieServer:
 
         result["response"] = response
         result["ok"] = bool(response.get("ok"))
-        result["stdout"] = json.dumps(response, indent=2)
+        result["stdout"] = json.dumps(response, indent=2, ensure_ascii=True)
         result["stderr"] = "" if result["ok"] else str(response.get("error") or "")
         result["exit_code"] = 0 if result["ok"] else 1
         result["duration_ms"] = elapsed_ms(start)
+        if response.get("_pipe_encoding_used"):
+            result["pipe_encoding_used"] = response.get("_pipe_encoding_used")
+        if response.get("_pipe_decode_note"):
+            result["output_encoding_note"] = response.get("_pipe_decode_note")
+        if response.get("_pipe_decode_warning"):
+            result["output_encoding_warning"] = response.get("_pipe_decode_warning")
         if not result["ok"]:
             result["error"] = response.get("error") or "agent command failed"
         self.log_command({"kind": "agent", "result": summarize_for_log(result)})
@@ -472,35 +449,9 @@ class SylphieServer:
     def run_lifecycle_script(self, script_key, extra_args=None, timeout_seconds=15):
         rel = SCRIPT_WHITELIST[script_key]
         script = (self.project_root / rel).resolve()
-        command = [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-        ] + list(extra_args or [])
-        start = time.perf_counter()
-        result = {"ok": False, "command": command, "stdout": "", "stderr": "", "exit_code": None, "duration_ms": 0}
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_seconds, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            result["stdout"] = ensure_text(exc.stdout)
-            result["stderr"] = "script timed out after %d seconds" % timeout_seconds
-            result["error"] = result["stderr"]
-            result["duration_ms"] = elapsed_ms(start)
-            return result
-        except OSError as exc:
-            result["stderr"] = str(exc)
-            result["error"] = result["stderr"]
-            result["duration_ms"] = elapsed_ms(start)
-            return result
-        result["stdout"] = completed.stdout
-        result["stderr"] = completed.stderr
-        result["exit_code"] = completed.returncode
-        result["ok"] = completed.returncode == 0
-        result["duration_ms"] = elapsed_ms(start)
-        if not result["ok"]:
+        command = powershell_file_command(str(script), extra_args)
+        result = run_subprocess(command, timeout_seconds=timeout_seconds)
+        if not result["ok"] and result.get("error") == "command failed":
             result["error"] = result["stderr"] or result["stdout"] or "script failed"
         self.log_command({"kind": "lifecycle", "result": summarize_for_log(result)})
         return result
@@ -516,30 +467,8 @@ class SylphieServer:
             str(script),
         ] + list(extra_args or [])
         command = elevated_powershell_command(self.project_root, script_args)
-        start = time.perf_counter()
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_seconds, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            return {
-                "ok": False,
-                "error": "timed out while launching elevated script",
-                "stdout": ensure_text(exc.stdout),
-                "stderr": ensure_text(exc.stderr),
-                "command": command,
-                "duration_ms": elapsed_ms(start),
-            }
-        except OSError as exc:
-            return {"ok": False, "error": str(exc), "command": command, "duration_ms": elapsed_ms(start)}
-
-        result = {
-            "ok": completed.returncode == 0,
-            "command": command,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "exit_code": completed.returncode,
-            "duration_ms": elapsed_ms(start),
-            "message": "Elevated script requested. Re-run status after UAC/action completes.",
-        }
+        result = run_subprocess(command, timeout_seconds=timeout_seconds)
+        result["message"] = "Elevated script requested. Re-run status after UAC/action completes."
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "elevated script launch failed"
         self.log_command({"kind": kind, "result": summarize_for_log(result)})
@@ -564,7 +493,24 @@ class SylphieServer:
         return result
 
     def agent_task_status(self):
-        return self.run_json_lifecycle_script("agent-task-control", ["-Action", "status"], timeout_seconds=10)
+        result = self.run_json_lifecycle_script("agent-task-control", ["-Action", "status"], timeout_seconds=10)
+        pipe_responding = bool(result.get("pipe_responding") or result.get("agent_ping"))
+        if pipe_responding:
+            status = self.run_agent_payload({"id": str(uuid.uuid4()), "cmd": "status"}, timeout_seconds=2, command=["agent", "status"])
+            result["agent_status"] = status
+            state = status.get("response", {}).get("state") if status.get("ok") else None
+            if state:
+                result["elevated"] = bool(state.get("is_elevated"))
+                result["agent_state"] = state
+                result["agent_owner_status"] = state.get("current_owner_status")
+                result["current_owner_status"] = state.get("current_owner_status")
+                result["blocking_conflicts"] = state.get("blocking_conflicts") or []
+                result["warnings"] = state.get("warnings") or []
+                result["command_count"] = state.get("command_count")
+                result["failure_count"] = state.get("failure_count")
+                result["agent_process_running"] = True
+                result["running"] = True
+        return result
 
     def run_agent_task_action(self, action, enable_autostart=False, stop_agent=False):
         args = ["-Action", action]
@@ -631,31 +577,10 @@ class SylphieServer:
             self.project_root,
             ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         )
-        start = time.perf_counter()
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=8, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            return 500, {
-                "ok": False,
-                "error": "timed out while launching elevated audio/reactive action",
-                "stdout": ensure_text(exc.stdout),
-                "stderr": ensure_text(exc.stderr),
-                "command": command,
-            }
-        except OSError as exc:
-            return 500, {"ok": False, "error": str(exc), "command": command}
-
-        result = {
-            "ok": completed.returncode == 0,
-            "action": action,
-            "command": command,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "exit_code": completed.returncode,
-            "duration_ms": elapsed_ms(start),
-            "log": str(log_path),
-            "message": "Elevated audio/reactive action requested. Re-run health after UAC/action completes.",
-        }
+        result = run_subprocess(command, timeout_seconds=8)
+        result["action"] = action
+        result["log"] = str(log_path)
+        result["message"] = "Elevated audio/reactive action requested. Re-run health after UAC/action completes."
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "audio/reactive action launch failed"
         self.log_command({"kind": "audio-reactive-action", "result": summarize_for_log(result)})
@@ -766,29 +691,8 @@ class SylphieServer:
             mode,
         ]
         command = elevated_powershell_command(self.project_root, script_args)
-        start = time.perf_counter()
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=8, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            return 500, {
-                "ok": False,
-                "error": "timed out while launching elevated cold-start capture",
-                "stdout": ensure_text(exc.stdout),
-                "stderr": ensure_text(exc.stderr),
-                "command": command,
-            }
-        except OSError as exc:
-            return 500, {"ok": False, "error": str(exc), "command": command}
-
-        result = {
-            "ok": completed.returncode == 0,
-            "command": command,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "exit_code": completed.returncode,
-            "duration_ms": elapsed_ms(start),
-            "message": "Elevated cold-start capture window requested. The dashboard/server may stop during the workflow.",
-        }
+        result = run_subprocess(command, timeout_seconds=8)
+        result["message"] = "Elevated cold-start capture window requested. The dashboard/server may stop during the workflow."
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "failed to launch elevated cold-start capture"
         self.log_command({"kind": "capture-cold-start", "result": summarize_for_log(result)})
@@ -817,28 +721,8 @@ class SylphieServer:
             str(marker_log),
         ]
         command = elevated_powershell_command(self.project_root, script_args)
-        start = time.perf_counter()
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=8, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            return 500, {
-                "ok": False,
-                "error": "timed out while launching elevated Armoury stack start",
-                "stdout": ensure_text(exc.stdout),
-                "stderr": ensure_text(exc.stderr),
-                "command": command,
-            }
-        except OSError as exc:
-            return 500, {"ok": False, "error": str(exc), "command": command}
-        result = {
-            "ok": completed.returncode == 0,
-            "command": command,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "exit_code": completed.returncode,
-            "duration_ms": elapsed_ms(start),
-            "message": "Elevated Armoury stack start requested. Add FIRST_LIGHT marker manually when LEDs return.",
-        }
+        result = run_subprocess(command, timeout_seconds=8)
+        result["message"] = "Elevated Armoury stack start requested. Add FIRST_LIGHT marker manually when LEDs return."
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "failed to launch Armoury stack start"
         self.log_command({"kind": "capture-start-stack", "result": summarize_for_log(result)})
@@ -902,27 +786,7 @@ class SylphieServer:
             marker_log = self.capture_marker_log
         if marker_log:
             command += ["--markers", str(marker_log)]
-        start = time.perf_counter()
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=15, shell=False)
-        except subprocess.TimeoutExpired as exc:
-            return 500, {
-                "ok": False,
-                "error": "capture analysis timed out",
-                "stdout": ensure_text(exc.stdout),
-                "stderr": ensure_text(exc.stderr),
-                "command": command,
-            }
-        except OSError as exc:
-            return 500, {"ok": False, "error": str(exc), "command": command}
-        result = {
-            "ok": completed.returncode == 0,
-            "command": command,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "exit_code": completed.returncode,
-            "duration_ms": elapsed_ms(start),
-        }
+        result = run_subprocess(command, timeout_seconds=15)
         if not result["ok"]:
             result["error"] = result["stderr"] or result["stdout"] or "capture analysis failed"
         return (200 if result["ok"] else 500), result
@@ -934,11 +798,98 @@ def command_to_text(command):
     return " ".join(str(part) for part in command)
 
 
+def robust_decode_bytes(value):
+    if value is None:
+        return {"text": "", "encoding_used": "none", "fallback_used": False, "replacement_used": False}
+    if isinstance(value, str):
+        return {"text": value, "encoding_used": "str", "fallback_used": False, "replacement_used": False}
+    candidates = ["utf-8", "utf-8-sig", locale.getpreferredencoding(False), "cp1252", "latin-1"]
+    tried = []
+    for encoding in candidates:
+        if not encoding:
+            continue
+        normalized = encoding.lower()
+        if normalized in tried:
+            continue
+        tried.append(normalized)
+        try:
+            return {
+                "text": value.decode(encoding),
+                "encoding_used": encoding,
+                "fallback_used": normalized not in ("utf-8", "utf8", "utf-8-sig"),
+                "replacement_used": False,
+            }
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return {
+        "text": value.decode("utf-8", errors="replace"),
+        "encoding_used": "utf-8-replace",
+        "fallback_used": True,
+        "replacement_used": True,
+    }
+
+
+def attach_decoded_output(result, stdout_bytes=None, stderr_bytes=None):
+    stdout = robust_decode_bytes(stdout_bytes)
+    stderr = robust_decode_bytes(stderr_bytes)
+    result["stdout"] = stdout["text"]
+    result["stderr"] = stderr["text"]
+    result["stdout_encoding"] = stdout["encoding_used"]
+    result["stderr_encoding"] = stderr["encoding_used"]
+    result["output_encoding"] = {
+        "stdout": {key: stdout[key] for key in ("encoding_used", "fallback_used", "replacement_used")},
+        "stderr": {key: stderr[key] for key in ("encoding_used", "fallback_used", "replacement_used")},
+    }
+    if stdout["replacement_used"] or stderr["replacement_used"]:
+        result["output_encoding_warning"] = "Command output encoding error. Output was decoded with replacement characters."
+    elif stdout["fallback_used"] or stderr["fallback_used"]:
+        result["output_encoding_note"] = "Command output was decoded with a fallback encoding."
+    return result
+
+
+def run_subprocess(command, timeout_seconds, shell=False):
+    start = time.perf_counter()
+    result = {
+        "ok": False,
+        "command": command,
+        "stdout": "",
+        "stderr": "",
+        "exit_code": None,
+        "duration_ms": 0,
+    }
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=timeout_seconds,
+            shell=shell,
+        )
+    except subprocess.TimeoutExpired as exc:
+        attach_decoded_output(result, exc.stdout, exc.stderr)
+        result["stderr"] = (result["stderr"] + "\n" if result["stderr"] else "") + "command timed out after %d seconds" % timeout_seconds
+        result["error"] = result.get("output_encoding_warning") or result["stderr"]
+        result["duration_ms"] = elapsed_ms(start)
+        return result
+    except OSError as exc:
+        result["stderr"] = str(exc)
+        result["error"] = result["stderr"]
+        result["duration_ms"] = elapsed_ms(start)
+        return result
+
+    attach_decoded_output(result, completed.stdout, completed.stderr)
+    result["exit_code"] = completed.returncode
+    result["ok"] = completed.returncode == 0
+    result["duration_ms"] = elapsed_ms(start)
+    if not result["ok"]:
+        result["error"] = result.get("output_encoding_warning") or result["stderr"] or result["stdout"] or "command failed"
+    return result
+
+
 def ensure_text(value):
     if value is None:
         return ""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+        return robust_decode_bytes(value)["text"]
     return str(value)
 
 
@@ -964,7 +915,52 @@ def powershell_quote_arg(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def powershell_invocation_arg(value):
+    text = str(value)
+    if re.match(r"^-[A-Za-z][A-Za-z0-9-]*$", text):
+        return text
+    return powershell_quote_arg(text)
+
+
+POWERSHELL_UTF8_PRELUDE = (
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+    "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+)
+
+
+def powershell_inline_command(script):
+    return [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        POWERSHELL_UTF8_PRELUDE + "\n" + script,
+    ]
+
+
+def powershell_file_command(script, args=None):
+    invocation = "& " + powershell_quote_arg(script)
+    for arg in list(args or []):
+        invocation += " " + powershell_invocation_arg(arg)
+    return powershell_inline_command(invocation)
+
+
 def elevated_powershell_command(working_directory, script_args):
+    script_args = list(script_args)
+    if "-File" in script_args:
+        index = script_args.index("-File")
+        if index + 1 < len(script_args):
+            script = script_args[index + 1]
+            file_args = script_args[index + 2 :]
+            invocation = "& " + powershell_quote_arg(script)
+            for arg in file_args:
+                invocation += " " + powershell_invocation_arg(arg)
+            script_args = script_args[:index] + ["-Command", POWERSHELL_UTF8_PRELUDE + "\n" + invocation]
+    elif "-Command" in script_args:
+        index = script_args.index("-Command")
+        if index + 1 < len(script_args):
+            script_args[index + 1] = POWERSHELL_UTF8_PRELUDE + "\n" + script_args[index + 1]
     argument_array = "@(" + ",".join(powershell_quote_arg(arg) for arg in script_args) + ")"
     command_text = (
         "Start-Process "
@@ -1103,8 +1099,40 @@ def tail_file(path, lines=200, max_bytes=256 * 1024):
         size = handle.tell()
         handle.seek(max(0, size - max_bytes))
         data = handle.read()
-    text = data.decode("utf-8", errors="replace")
-    return {"ok": True, "path": str(path), "text": "\n".join(text.splitlines()[-lines:])}
+    decoded = robust_decode_bytes(data)
+    payload = {
+        "ok": True,
+        "path": str(path),
+        "text": "\n".join(decoded["text"].splitlines()[-lines:]),
+        "encoding_used": decoded["encoding_used"],
+    }
+    if decoded["replacement_used"]:
+        payload["output_encoding_warning"] = "Command output encoding error. Output was decoded with replacement characters."
+    elif decoded["fallback_used"]:
+        payload["output_encoding_note"] = "Command output was decoded with a fallback encoding."
+    return payload
+
+
+def run_powershell_json(script, timeout_seconds, parse_error_label, empty_payload):
+    command = powershell_inline_command(script)
+    result = run_subprocess(command, timeout_seconds=timeout_seconds)
+    if not result.get("ok"):
+        payload = {"ok": False, "error": result.get("error") or result.get("stderr") or result.get("stdout") or "PowerShell command failed", **empty_payload}
+        payload["command_result"] = summarize_for_log(result)
+        return payload
+    try:
+        payload = json.loads(result.get("stdout") or "{}")
+    except json.JSONDecodeError as exc:
+        payload = {"ok": False, "error": parse_error_label + ": " + str(exc), "raw": result.get("stdout", ""), **empty_payload}
+        payload["command_result"] = summarize_for_log(result)
+        return payload
+    if not isinstance(payload, dict):
+        payload = {"ok": False, "error": parse_error_label + ": JSON root is not an object", "raw": result.get("stdout", ""), **empty_payload}
+        payload["command_result"] = summarize_for_log(result)
+        return payload
+    payload["ok"] = True
+    payload["command_result"] = summarize_for_log(result)
+    return payload
 
 
 def list_captures(project_root):
@@ -1158,19 +1186,7 @@ foreach ($name in $processNames) {{
   processes = $processes
 }} | ConvertTo-Json -Depth 6
 """
-    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=15, shell=False, encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "services": [], "processes": []}
-    if completed.returncode != 0:
-        return {"ok": False, "error": completed.stderr or completed.stdout, "services": [], "processes": []}
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": "snapshot JSON parse failed: " + str(exc), "raw": completed.stdout, "services": [], "processes": []}
-    payload["ok"] = True
-    return payload
+    return run_powershell_json(script, 15, "snapshot JSON parse failed", {"services": [], "processes": []})
 
 
 def ownership_probe_snapshot():
@@ -1253,19 +1269,7 @@ foreach ($name in $processNames) {{
   processes = $processes
 }} | ConvertTo-Json -Depth 6
 """
-    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=8, shell=False, encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "processes": []}
-    if completed.returncode != 0:
-        return {"ok": False, "error": completed.stderr or completed.stdout, "processes": []}
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": "ownership JSON parse failed: " + str(exc), "raw": completed.stdout, "processes": []}
-    payload["ok"] = True
-    return payload
+    return run_powershell_json(script, 8, "ownership JSON parse failed", {"services": [], "processes": []})
 
 
 def ownership_marker_path(project_root):
@@ -1615,19 +1619,7 @@ $logiStorm = @($processes | Where-Object {{ $_.base_name -like "logi_download_as
   logi_download_assistant_storm = $logiStorm.Count -gt 3
 }} | ConvertTo-Json -Depth 6
 """
-    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=15, shell=False, encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "services": [], "processes": []}
-    if completed.returncode != 0:
-        return {"ok": False, "error": completed.stderr or completed.stdout, "services": [], "processes": []}
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": "Armoury health JSON parse failed: " + str(exc), "raw": completed.stdout, "services": [], "processes": []}
-    payload["ok"] = True
-    return payload
+    return run_powershell_json(script, 15, "Armoury health JSON parse failed", {"services": [], "processes": []})
 
 
 def audio_reactive_health_snapshot():
@@ -1696,19 +1688,7 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {{
   processes = $processes
 }} | ConvertTo-Json -Depth 6
 """
-    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=15, shell=False, encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "services": [], "processes": []}
-    if completed.returncode != 0:
-        return {"ok": False, "error": completed.stderr or completed.stdout, "services": [], "processes": []}
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": "audio/reactive JSON parse failed: " + str(exc), "raw": completed.stdout, "services": [], "processes": []}
-    payload["ok"] = True
-    return payload
+    return run_powershell_json(script, 15, "audio/reactive JSON parse failed", {"services": [], "processes": []})
 
 
 def audio_reactive_action_script(action, project_root):
